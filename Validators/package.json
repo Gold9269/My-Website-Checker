@@ -1,0 +1,24 @@
+{
+  "type": "module",
+  "dependencies": {
+    "@solana/web3.js": "^1.98.4",
+    "bs58": "^6.0.0",
+    "node-fetch": "^3.3.2",
+    "tweetnacl": "^1.0.3",
+    "tweetnacl-util": "^0.15.1",
+    "ws": "^8.18.3"
+  },
+  "devDependencies": {
+    "@types/node": "^24.3.0",
+    "@types/ws": "^8.18.1",
+    "dotenv": "^17.2.1",
+    "ts-node": "^10.9.2",
+    "ts-node-dev": "^2.0.0",
+    "typescript": "^5.9.2"
+  },
+  "scripts": {
+    "dev": "node --loader ts-node/esm ./index.ts",
+    "build": "tsc",
+    "start": "node ./dist/index.js"
+  }
+}
