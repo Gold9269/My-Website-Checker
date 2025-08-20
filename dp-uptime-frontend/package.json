@@ -11,8 +11,10 @@
   },
   "dependencies": {
     "@clerk/clerk-react": "^5.32.1",
+    "@solana/web3.js": "^1.98.4",
     "axios": "^1.10.0",
     "dotenv": "^16.5.0",
+    "express": "^5.1.0",
     "framer-motion": "^12.23.12",
     "lucide-react": "^0.523.0",
     "node-fetch": "^3.3.2",

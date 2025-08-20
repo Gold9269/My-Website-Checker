@@ -71,7 +71,6 @@ if (SMTP_HOST && SMTP_USER && SMTP_PASS) {
       auth: { user: SMTP_USER, pass: SMTP_PASS },
       logger: true,
       debug: true,
-      // tls: { rejectUnauthorized: false } // uncomment for self-signed certs in dev only
     } as any);
 
     // Verify but keep transporter even if verification fails so sendMail returns actionable errors
@@ -116,15 +115,30 @@ async function sendEmail_Nodemailer(to: string, subject: string, text: string, h
 
 // ---------------- helpers ----------------
 async function verifyMessage(message: string, publicKey: string, signature: string): Promise<boolean> {
-  const messageBytes = nacl_util.decodeUTF8(message);
+  if (!signature) {
+    // no signature provided
+    console.warn('[HUB] verifyMessage called with undefined signature');
+    return false;
+  }
+
+  let sigArr: number[] | undefined;
   try {
+    sigArr = JSON.parse(signature);
+    if (!Array.isArray(sigArr)) throw new Error('signature not array');
+  } catch (err) {
+    console.warn('[HUB] verifyMessage JSON.parse failed:', err);
+    return false;
+  }
+
+  try {
+    const messageBytes = nacl_util.decodeUTF8(message);
     return nacl.sign.detached.verify(
       messageBytes,
-      new Uint8Array(JSON.parse(signature)),
+      new Uint8Array(sigArr),
       new PublicKey(publicKey).toBytes()
     );
   } catch (err) {
-    console.warn('[HUB] verifyMessage error:', err);
+    console.warn('[HUB] verifyMessage error during verify:', err);
     return false;
   }
 }
@@ -141,9 +155,45 @@ async function hasConsecutiveBadTicks(websiteId: any, required: number, lookback
 }
 
 // ---------------- state ----------------
-const availableValidators: { validatorId: string; socket: WebSocket; publicKey: string }[] = [];
+// NOTE: added sessionToken optional field
+const availableValidators: { validatorId: string; socket: WebSocket; publicKey: string; sessionToken?: string | null }[] = [];
 const CALLBACKS: { [callbackId: string]: (data: IncomingMessage) => void } = {};
 const COST_PER_VALIDATION = 100;
+
+// ---------------- broadcast helper ----------------
+async function broadcastEarningToValidator(validatorId: string, earnedLamports: number) {
+  try {
+    // fetch fresh validator doc to get up-to-date pendingPayouts
+    const vdoc: any = await ValidatorModel.findById(validatorId).lean();
+    const pending = vdoc ? Number(vdoc.pendingPayouts || 0) : null;
+
+    // find connected sockets for this validatorId
+    const targets = availableValidators.filter(v => String(v.validatorId) === String(validatorId));
+    if (targets.length === 0) {
+      console.debug('[HUB] broadcastEarning: no connected sockets for validator', validatorId);
+      return;
+    }
+
+    const payload = {
+      type: 'earning',
+      data: {
+        time: Date.now(),
+        value: Number(earnedLamports || 0),       // lamports earned this tick
+        pendingPayouts: pending,                 // current pending (lamports)
+      }
+    };
+
+    for (const t of targets) {
+      try {
+        t.socket.send(JSON.stringify(payload));
+      } catch (sendErr) {
+        console.warn('[HUB] broadcastEarning: failed to send to socket for', validatorId, sendErr);
+      }
+    }
+  } catch (err) {
+    console.error('[HUB] broadcastEarningToValidator error:', err);
+  }
+}
 
 // ---------------- signup handler ----------------
 async function signupHandler(ws: WebSocket, { ip, publicKey, signedMessage, callbackId }: SignupIncomingMessage) {
@@ -156,15 +206,16 @@ async function signupHandler(ws: WebSocket, { ip, publicKey, signedMessage, call
     const validator = await ValidatorModel.findOne({ publicKey });
     if (validator) {
       console.log("Existing validator found:", validator._id?.toString?.());
+      // NOTE: no sessionToken generation here (client may manage a token)
       ws.send(JSON.stringify({ type: "signup", data: { validatorId: validator._id, callbackId } }));
-      availableValidators.push({ validatorId: validator._id.toString(), socket: ws, publicKey: validator.publicKey });
+      addAvailableValidator(validator._id.toString(), ws, validator.publicKey);
       return;
     }
 
     const newValidator = await ValidatorModel.create({ ip, publicKey, location: "unknown" });
     console.log("Created validator:", newValidator._id?.toString?.());
     ws.send(JSON.stringify({ type: "signup", data: { validatorId: newValidator._id, callbackId } }));
-    availableValidators.push({ validatorId: newValidator._id.toString(), socket: ws, publicKey: newValidator.publicKey });
+    addAvailableValidator(newValidator._id.toString(), ws, newValidator.publicKey);
   } catch (err) {
     console.error('[HUB] signupHandler DB error:', err);
   }
@@ -220,6 +271,10 @@ async function persistTickAndPayoutFallback(
         await session.commitTransaction();
         session.endSession();
         console.log('[HUB] Created WebsiteTick and updated validator payouts (transactional)');
+
+        // broadcast earning to validator(s) (COST_PER_VALIDATION is lamports-like unit here)
+        try { await broadcastEarningToValidator(String(validatorId), COST_PER_VALIDATION); } catch (e) { /* noop */ }
+
         return;
       }
     } catch (txErr: any) {
@@ -257,6 +312,9 @@ async function persistTickAndPayoutFallback(
       console.warn('[HUB] Validator update matched 0 docs — validatorId may be invalid.');
     } else {
       console.log('[HUB] Updated validator pending payouts (non-transactional)');
+
+      // broadcast earning to validator(s)
+      try { await broadcastEarningToValidator(String(validatorId), COST_PER_VALIDATION); } catch (e) { /* noop */ }
     }
   } catch (fallbackErr) {
     console.error('[HUB] Non-transactional fallback failed:', fallbackErr);
@@ -316,58 +374,136 @@ async function tryNotifyOwnerIfNeeded(websiteId: any, websiteOwnerId: any, statu
   }
 }
 
-// ---------------- cron job ----------------
-function startCronJobs() {
-  setInterval(async () => {
-    try {
-      if (mongoose.connection.readyState !== 1) {
-        console.warn('[HUB] Skipping cron iteration — DB not connected');
-        return;
-      }
+// ---------------- cron job (controlled lifecycle) ----------------
+const CRON_INTERVAL_MS = Number(process.env.CRON_INTERVAL_MS ?? 60_000);
+let cronInterval: NodeJS.Timeout | null = null;
 
-      const websitesToMonitor = await Website.find({ disabled: false });
+function addAvailableValidator(validatorId: string, socket: WebSocket, publicKey: string, sessionToken?: string | null) {
+  const exists = availableValidators.find(v => v.validatorId === validatorId || v.socket === socket);
+  if (exists) {
+    // update sessionToken if provided
+    if (sessionToken) exists.sessionToken = sessionToken;
+    return;
+  }
+  availableValidators.push({ validatorId, socket, publicKey, sessionToken: sessionToken ?? null });
+  console.log('[HUB] Validator added to availableValidators:', validatorId);
+  startCronIfNeeded();
+}
 
-      for (const website of websitesToMonitor) {
-        for (const validator of availableValidators) {
-          const callbackId = randomUUID();
-          console.log(`[HUB] sending validate to validator=${validator.validatorId} url=${website.url} websiteId=${website._id} callbackId=${callbackId}`);
+function removeAvailableValidatorBySocket(socket: WebSocket) {
+  const before = availableValidators.length;
+  for (let i = availableValidators.length - 1; i >= 0; i--) {
+    if (availableValidators[i].socket === socket) availableValidators.splice(i, 1);
+  }
+  if (availableValidators.length !== before) {
+    console.log('[HUB] Removed validator(s) for closed socket. remaining:', availableValidators.length);
+  }
+  stopCronIfIdle();
+}
 
-          // include websiteId in the payload so validator can reply with it
-          validator.socket.send(JSON.stringify({ type: "validate", data: { url: website.url, callbackId, websiteId: website._id } }));
+function startCronIfNeeded() {
+  if (!cronInterval && availableValidators.length > 0) {
+    console.log('[HUB] Starting cron (validators available). Interval ms =', CRON_INTERVAL_MS);
+    startCron();
+  }
+}
 
-          CALLBACKS[callbackId] = async (data: IncomingMessage) => {
-            try {
-              if (data.type !== 'validate') return;
-              const { validatorId, status, latency, signedMessage } = data.data;
+function stopCronIfIdle() {
+  if (cronInterval && availableValidators.length === 0) {
+    clearInterval(cronInterval);
+    cronInterval = null;
+    console.log('[HUB] Cron stopped — no validators available');
+  }
+}
 
-              const verified = await verifyMessage(`Replying to ${callbackId}`, validator.publicKey, signedMessage);
-              if (!verified) {
-                console.warn('[HUB] validate reply signature failed verification');
-                return;
-              }
-
-              // <-- IMPORTANT: pass website.userId as websiteOwnerId
-              await persistTickAndPayoutFallback(
-                website._id,
-                website.userId,      // owner check (Clerk id)
-                validatorId,
-                status,
-                latency
-              );
-
-              // After successful persist, attempt notify (non-blocking)
-              await tryNotifyOwnerIfNeeded(website._id, website.userId, status, latency);
-
-            } catch (err) {
-              console.error('[HUB] Error in CALLBACK handler:', err);
-            }
-          };
-        }
-      }
-    } catch (err) {
-      console.error('Cron job iteration failed:', err);
+async function runCronIteration() {
+  try {
+    if (mongoose.connection.readyState !== 1) {
+      console.warn('[HUB] Skipping cron iteration — DB not connected');
+      return;
     }
-  }, 60 * 1000);
+
+    const websitesToMonitor = await Website.find({ disabled: false });
+
+    for (const website of websitesToMonitor) {
+      for (const validator of availableValidators) {
+        const callbackId = randomUUID();
+        console.log(`[HUB] sending validate to validator=${validator.validatorId} url=${website.url} websiteId=${website._id} callbackId=${callbackId}`);
+
+        try {
+          validator.socket.send(JSON.stringify({ type: "validate", data: { url: website.url, callbackId, websiteId: website._id } }));
+        } catch (sendErr) {
+          console.warn('[HUB] failed to send validate to validator socket, removing it soon if closed:', sendErr);
+        }
+
+        CALLBACKS[callbackId] = async (data: IncomingMessage) => {
+          try {
+            if (data.type !== 'validate') return;
+            const { validatorId, status, latency, signedMessage, sessionToken } = data.data;
+
+            let verified = false;
+
+            // 1) If a signedMessage is present, validate signature
+            if (signedMessage) {
+              verified = await verifyMessage(`Replying to ${callbackId}`, validator.publicKey, signedMessage);
+              if (!verified) {
+                console.warn('[HUB] validate reply signature failed verification (signedMessage present)');
+              }
+            } else if (sessionToken) {
+              // 2) If sessionToken present, accept only if it matches what we have for this validator entry
+              if (validator.sessionToken && validator.sessionToken === sessionToken) {
+                verified = true;
+              } else {
+                // If the validator record has no stored sessionToken, we accept sessionToken (best-effort) but log warn.
+                if (!validator.sessionToken) {
+                  console.warn('[HUB] validate reply contained sessionToken but Hub has no stored token for this validator — accepting best-effort');
+                  verified = true;
+                } else {
+                  console.warn('[HUB] validate reply sessionToken mismatch — rejecting');
+                  verified = false;
+                }
+              }
+            } else {
+              console.warn('[HUB] validate reply contained neither signedMessage nor sessionToken — rejecting');
+              verified = false;
+            }
+
+            if (!verified) return;
+
+            // Persist tick and payouts (owner check done inside persistTickAndPayoutFallback)
+            await persistTickAndPayoutFallback(
+              website._id,
+              website.userId,      // owner check (Clerk id)
+              validatorId,
+              status,
+              latency
+            );
+
+            // Attempt notification
+            await tryNotifyOwnerIfNeeded(website._id, website.userId, status, latency);
+
+          } catch (err) {
+            console.error('[HUB] Error in CALLBACK handler:', err);
+          }
+        };
+      }
+    }
+  } catch (err) {
+    console.error('Cron job iteration failed:', err);
+  }
+}
+
+function startCron() {
+  if (cronInterval) return;
+  // run once immediately, then every CRON_INTERVAL_MS
+  runCronIteration().catch((e) => console.error('[HUB] initial cron iteration failed:', e));
+  cronInterval = setInterval(() => runCronIteration().catch((e) => console.error('[HUB] cron iteration failed:', e)), CRON_INTERVAL_MS);
+}
+
+function stopCron() {
+  if (!cronInterval) return;
+  clearInterval(cronInterval);
+  cronInterval = null;
 }
 
 // ---------------- mongoose setup & connect ----------------
@@ -410,7 +546,6 @@ async function connectWithRetries(uri: string, attempts = 5, waitMs = 2000) {
 
 // ---------------- Import backend model modules AND rebind their schemas to THIS mongoose instance ----
 async function importAndRebindModels() {
-  // import backend modules (they export mongoose.model(...) from backend's mongoose)
   const vmod = await import("../dp-uptime-backend/model/Validator.model.ts");
   const importedValidator = (vmod as any).default ?? vmod;
   if (!importedValidator || !importedValidator.schema) throw new Error('Validator model import missing schema');
@@ -423,7 +558,6 @@ async function importAndRebindModels() {
   const importedWebsiteTick = (tmod as any).default ?? (tmod as any).WebsiteTick ?? tmod;
   if (!importedWebsiteTick || !importedWebsiteTick.schema) throw new Error('WebsiteTick model import missing schema');
 
-  // Use the Hub's active connection to create models explicitly on that connection.
   const conn = mongoose.connection;
 
   const vName = importedValidator.modelName ?? 'Validator';
@@ -507,12 +641,50 @@ async function importAndRebindModels() {
             } else {
               console.warn('[HUB] signup signature verification failed');
             }
+          } else if (data.type === 'resume') {
+            try {
+              const maybePublicKey = data.data?.publicKey ?? null;
+              const maybeValidatorId = data.data?.validatorId ?? null;
+              const incomingSessionToken = data.data?.sessionToken ?? null;
+              let dbValidator: any = null;
+              if (maybePublicKey) dbValidator = await ValidatorModel.findOne({ publicKey: maybePublicKey }).lean();
+              else if (maybeValidatorId) dbValidator = await ValidatorModel.findById(maybeValidatorId).lean();
+
+              if (dbValidator) {
+                addAvailableValidator(dbValidator._id.toString(), ws, dbValidator.publicKey, incomingSessionToken ?? null);
+                ws.send(JSON.stringify({ type: 'resume', data: { ok: true, validatorId: dbValidator._id.toString() } }));
+              } else {
+                ws.send(JSON.stringify({ type: 'resume', data: { ok: false } }));
+              }
+            } catch (err) {
+              console.warn('[HUB] resume handler error:', err);
+              ws.send(JSON.stringify({ type: 'resume', data: { ok: false } }));
+            }
           } else if (data.type === 'validate') {
             if (CALLBACKS[data.data.callbackId]) {
               CALLBACKS[data.data.callbackId](data);
               delete CALLBACKS[data.data.callbackId];
             } else {
               console.warn('[HUB] Received validate reply but no callback found for', data.data.callbackId);
+            }
+          } else if (data.type === 'subscribe_earnings') {
+            try {
+              const pk = data.data && data.data.publicKey;
+              const incomingSessionToken = data.data?.sessionToken ?? null;
+              if (pk) {
+                const v = await ValidatorModel.findOne({ publicKey: pk }).lean();
+                if (v) {
+                  addAvailableValidator(v._id.toString(), ws, v.publicKey, incomingSessionToken ?? null);
+                  ws.send(JSON.stringify({ type: 'subscribed', data: { ok: true, validatorId: v._id.toString() } }));
+                } else {
+                  ws.send(JSON.stringify({ type: 'subscribed', data: { ok: false, error: 'validator not found' } }));
+                }
+              } else {
+                ws.send(JSON.stringify({ type: 'subscribed', data: { ok: false, error: 'missing publicKey' } }));
+              }
+            } catch (err) {
+              console.warn('[HUB] subscribe_earnings handler error:', err);
+              ws.send(JSON.stringify({ type: 'subscribed', data: { ok: false, error: String(err) } }));
             }
           } else {
             console.warn('[HUB] Unknown message type from validator:', (data as any).type);
@@ -523,13 +695,14 @@ async function importAndRebindModels() {
       });
 
       ws.on('close', () => {
-        const idx = availableValidators.findIndex(v => v.socket === ws);
-        if (idx !== -1) availableValidators.splice(idx, 1);
+        removeAvailableValidatorBySocket(ws);
+      });
+
+      ws.on('error', () => {
+        removeAvailableValidatorBySocket(ws);
       });
     });
 
-    // 4) start cron jobs
-    startCronJobs();
     console.log('[HUB] bootstrap complete — running');
   } catch (err) {
     console.error('[HUB] Failed to bootstrap:', err);

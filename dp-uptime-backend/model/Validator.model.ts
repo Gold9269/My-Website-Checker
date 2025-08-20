@@ -1,4 +1,4 @@
-import mongoose, { Schema, Document, Types } from 'mongoose';
+import mongoose, { Schema, Document, Types } from "mongoose";
 
 export interface IValidator extends Document {
   publicKey: string;
@@ -6,6 +6,7 @@ export interface IValidator extends Document {
   ip: string;
   pendingPayouts: number;
   ticks: Types.ObjectId[];
+  sessionToken: string;
 }
 
 const ValidatorSchema: Schema = new Schema<IValidator>({
@@ -13,7 +14,8 @@ const ValidatorSchema: Schema = new Schema<IValidator>({
   location: { type: String, required: true },
   ip: { type: String, required: true },
   pendingPayouts: { type: Number, default: 0 },
-  ticks: [{ type: Schema.Types.ObjectId, ref: 'WebsiteTick' }],
+  ticks: [{ type: Schema.Types.ObjectId, ref: "WebsiteTick" }],
+  sessionToken: { type: String, default: "" },
 });
 
-export default mongoose.model<IValidator>('Validator', ValidatorSchema);
+export default mongoose.model<IValidator>("Validator", ValidatorSchema);

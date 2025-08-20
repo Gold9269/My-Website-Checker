@@ -16,7 +16,7 @@ const GetValidatorController: RequestHandler = async (req, res) => {
       return;
     }
 
-    // return minimal info (or full doc)
+    // Return validator info including pendingPayouts
     res.status(200).json({ validator });
     return;
   } catch (err) {
