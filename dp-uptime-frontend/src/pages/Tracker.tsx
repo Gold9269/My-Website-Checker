@@ -6,12 +6,56 @@ import axios from 'axios';
 import { SignedIn, SignedOut, SignInButton, SignUpButton, useAuth, UserButton } from '@clerk/clerk-react';
 import toast, { Toaster } from 'react-hot-toast';
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts';
-
-// <-- ADDED: import validator context hook (guarded usage)
+import { Connection, PublicKey, SystemProgram, Transaction, clusterApiUrl, LAMPORTS_PER_SOL } from '@solana/web3.js';
 import { useValidator } from '../context/validator';
 
-const backendUrl = "http://localhost:5000";
+// ---------- safe env helper ----------
+declare global {
+  interface Window { __ENV__?: Record<string, string>; __env__?: Record<string, string>; }
+}
 
+/**
+ * getClientEnv tries:
+ * 1. Vite import.meta.env (VITE_ prefix)
+ * 2. CRA / Webpack process.env (REACT_APP_ prefix) — guarded with typeof process check
+ * 3. runtime injected window.__ENV__ / window.__env__
+ * Falls back to provided fallback.
+ */
+function getClientEnv(name: string, fallback: string) {
+  // 1) Vite (import.meta.env)
+  try {
+    const viteKey = `VITE_${name}`;
+    const im = (import.meta as any)?.env;
+    if (im && typeof im[viteKey] === 'string' && im[viteKey] !== '') return im[viteKey];
+  } catch { /* ignore */ }
+
+  // 2) CRA / Webpack (process.env)
+  try {
+    if (typeof process !== 'undefined' && (process.env as any)) {
+      const craKey = `REACT_APP_${name}`;
+      if ((process.env as any)[craKey]) return (process.env as any)[craKey];
+    }
+  } catch { /* ignore */ }
+
+  // 3) Runtime injection (window.__ENV__ or window.__env__)
+  try {
+    const w = (window as any).__ENV__ ?? (window as any).__env__;
+    if (w && typeof w === 'object') {
+      if (w[`VITE_${name}`]) return w[`VITE_${name}`];
+      if (w[`REACT_APP_${name}`]) return w[`REACT_APP_${name}`];
+      if (w[name]) return w[name];
+    }
+  } catch { /* ignore */ }
+
+  return fallback;
+}
+
+// ---------- Config (use the helper) ----------
+const BACKEND_URL = getClientEnv('BACKEND_URL', 'http://localhost:5000');
+const TREASURY_ADDRESS = getClientEnv('TREASURY_ADDRESS', 'GDSo5N8RQoRu8asoUNEuDhXSVGYdNBafjsEJ3BoNPd7F');
+const SOLANA_NETWORK = getClientEnv('SOLANA_NETWORK', 'devnet');
+
+// ----- helper types -----
 type UptimeStatus = "good" | "bad" | "unknown";
 
 function StatusCircle({ status }: { status: UptimeStatus }) {
@@ -33,36 +77,160 @@ function UptimeTicks({ ticks }: { ticks: UptimeStatus[] }) {
   );
 }
 
+// ----------------- CreateWebsiteModal (Pay & Upload) -----------------
 function CreateWebsiteModal({
   isOpen,
   isDark,
   onClose,
+  connection,
+  walletPublicKey,
+  getToken,
 }: {
   isOpen: boolean;
   isDark: boolean;
   onClose: (url: string | null) => void;
+  connection: Connection;
+  walletPublicKey: string | null;
+  getToken?: () => Promise<string>;
 }) {
   const [url, setUrl] = useState('');
+  const [processing, setProcessing] = useState(false);
+  const lamportsToSend = Math.round(0.1 * LAMPORTS_PER_SOL); // 0.1 SOL
+
+  useEffect(() => {
+    if (!isOpen) {
+      setUrl('');
+      setProcessing(false);
+    }
+  }, [isOpen]);
+
   if (!isOpen) return null;
 
-  const containerClass = isDark
-    ? 'bg-[#071025] text-white'
-    : 'bg-white text-gray-900';
-
-  const inputClass = isDark
-    ? 'w-full px-3 py-2 border border-slate-700 rounded-md bg-[#0b1724] text-white placeholder:text-slate-400'
-    : 'w-full px-3 py-2 border border-gray-300 rounded-md bg-white text-gray-900 placeholder:text-gray-400';
-
-  const cancelClass = isDark
-    ? 'px-4 py-2 text-sm font-medium text-slate-300 hover:bg-slate-800 rounded-md'
-    : 'px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-100 rounded-md';
-
+  const containerClass = isDark ? 'bg-[#071025] text-white' : 'bg-white text-gray-900';
+  const inputClass = isDark ? 'w-full px-3 py-2 border border-slate-700 rounded-md bg-[#0b1724] text-white placeholder:text-slate-400' : 'w-full px-3 py-2 border border-gray-300 rounded-md bg-white text-gray-900 placeholder:text-gray-400';
+  const cancelClass = isDark ? 'px-4 py-2 text-sm font-medium text-slate-300 hover:bg-slate-800 rounded-md' : 'px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-100 rounded-md';
   const addBtnClass = `${!url ? 'opacity-60 cursor-not-allowed' : ''} px-4 py-2 text-sm font-medium rounded-md text-white ${isDark ? 'bg-blue-500 hover:bg-blue-600' : 'bg-blue-600 hover:bg-blue-700'}`;
+
+  const performPayAndUpload = async () => {
+    if (!url) return;
+    if (!walletPublicKey) {
+      toast.error('Connect your wallet first to pay.');
+      return;
+    }
+
+    try {
+      setProcessing(true);
+      const provider = (window as any).solana;
+      if (!provider) throw new Error('No Solana wallet provider found (install Phantom).');
+
+      const payerPubkey = new PublicKey(walletPublicKey);
+      const treasuryPubkey = new PublicKey(TREASURY_ADDRESS);
+
+      // Prevent accidental misuse: payer must not be the treasury address
+      if (payerPubkey.toString() === treasuryPubkey.toString()) {
+        toast.error('Your wallet public key equals the treasury address — connect the correct wallet.');
+        console.error('Aborting: payerPublicKey === TREASURY_ADDRESS', { payerPublicKey: payerPubkey.toString() });
+        return;
+      }
+
+      // Build transfer transaction
+      const tx = new Transaction().add(
+        SystemProgram.transfer({
+          fromPubkey: payerPubkey,
+          toPubkey: treasuryPubkey,
+          lamports: lamportsToSend,
+        })
+      );
+
+      // Attach recent blockhash & fee payer
+      const latest = await connection.getLatestBlockhash('finalized');
+      tx.recentBlockhash = latest.blockhash;
+      tx.feePayer = payerPubkey;
+
+      let txSignature: string | null = null;
+
+      // Preferred modern Phantom API
+      if (typeof provider.signAndSendTransaction === 'function') {
+        const signedResult = await provider.signAndSendTransaction(tx as any);
+        // provider may return { signature } or the signature string
+        txSignature = signedResult?.signature ?? (signedResult as any) ?? null;
+      } else if (typeof provider.signTransaction === 'function') {
+        const signedTx = await provider.signTransaction(tx);
+        const raw = signedTx.serialize();
+        txSignature = await connection.sendRawTransaction(raw);
+      } else {
+        throw new Error('Wallet does not support required signing methods.');
+      }
+
+      if (!txSignature) throw new Error('Failed to obtain transaction signature from wallet');
+
+      // debug logs to help troubleshooting
+      console.log('TX signature:', txSignature);
+      console.log('Payer public key (wallet):', payerPubkey.toString());
+      console.log('Treasury address:', treasuryPubkey.toString());
+      console.log('Expected lamports to send:', lamportsToSend);
+
+      // Wait for finalization (stronger than 'confirmed')
+      try {
+        await connection.confirmTransaction(txSignature, 'finalized');
+      } catch (e) {
+        // continue — we'll poll for parsed tx below
+        console.warn('confirmTransaction warning, continuing to poll parsed tx', e);
+      }
+
+      // Poll for parsed transaction to be indexed by RPC (backend uses getParsedTransaction)
+      const waitForParsed = async (sig: string, timeoutMs = 20000, intervalMs = 800) => {
+        const start = Date.now();
+        while (Date.now() - start < timeoutMs) {
+          try {
+            const parsed = await connection.getParsedTransaction(sig, 'finalized');
+            if (parsed && parsed.meta) return parsed;
+          } catch (err) {
+            // ignore and retry
+            console.debug('getParsedTransaction attempt failed', err);
+          }
+          await new Promise((r) => setTimeout(r, intervalMs));
+        }
+        return null;
+      };
+
+      const parsed = await waitForParsed(txSignature, 20000, 800);
+      if (!parsed) {
+        // parsed tx isn't available yet; server may retry — warn the user minimally
+        console.warn('Parsed transaction not available yet; backend may retry. Proceeding to POST the signature.');
+      } else {
+        // show parsed summary in console for debugging
+        console.log('Parsed tx (summary):', {
+          instructions: parsed.transaction?.message?.instructions,
+          innerInstructionsCount: Array.isArray(parsed.meta?.innerInstructions) ? parsed.meta.innerInstructions.length : 0,
+          preBalances: parsed.meta?.preBalances,
+          postBalances: parsed.meta?.postBalances,
+          accountKeys: parsed.transaction?.message?.accountKeys?.map((k: any) => (typeof k === 'string' ? k : k.pubkey?.toString?.() ?? String(k)))
+        });
+      }
+
+      // POST to backend (send signature string + payer public key)
+      const token = getToken ? await safeGetToken(getToken) : null;
+      await axios.post(
+        `${BACKEND_URL}/api/v1/create-website`,
+        { url, txSignature, payerPublicKey: payerPubkey.toString() },
+        token ? { headers: { Authorization: `Bearer ${token}` } } : {}
+      );
+
+      toast.success('Payment successful and website uploaded.');
+      onClose(url);
+    } catch (err: any) {
+      console.error('Payment/upload failed', err);
+      toast.error(err?.message ?? 'Payment or upload failed');
+    } finally {
+      setProcessing(false);
+    }
+  };
 
   return (
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
       <div className={`${containerClass} rounded-lg p-6 w-full max-w-md`}>
-        <h2 className="text-xl font-semibold mb-4">Add New Website</h2>
+        <h2 className="text-xl font-semibold mb-4">Pay & Upload Website (0.1 SOL)</h2>
         <div>
           <label className={`block text-sm font-medium mb-1 ${isDark ? 'text-slate-300' : 'text-gray-700'}`}>URL</label>
           <input
@@ -73,21 +241,16 @@ function CreateWebsiteModal({
             onChange={(e) => setUrl(e.target.value)}
           />
         </div>
+
         <div className="flex justify-end space-x-3 mt-6">
+          <button type="button" onClick={() => onClose(null)} className={cancelClass} disabled={processing}>Cancel</button>
           <button
             type="button"
-            onClick={() => onClose(null)}
-            className={cancelClass}
-          >
-            Cancel
-          </button>
-          <button
-            type="submit"
-            onClick={() => onClose(url)}
+            onClick={performPayAndUpload}
             className={addBtnClass}
-            disabled={!url}
+            disabled={!url || processing}
           >
-            Add Website
+            {processing ? 'Processing...' : 'Pay 0.1 SOL & Upload'}
           </button>
         </div>
       </div>
@@ -95,6 +258,17 @@ function CreateWebsiteModal({
   );
 }
 
+// safe getToken (wrap)
+async function safeGetToken(getToken?: () => Promise<string>) {
+  try {
+    if (!getToken) return null;
+    return await getToken();
+  } catch {
+    return null;
+  }
+}
+
+// ----------------- WebsiteCard & Navbar (only slight changes) -----------------
 interface ProcessedWebsite {
   id: string;
   url: string;
@@ -110,7 +284,7 @@ interface ProcessedWebsite {
 }
 
 function WebsiteCard({ website, isDark }: { website: ProcessedWebsite; isDark: boolean }) {
-  const deleteUrl = `${backendUrl}/api/v1/delete-website`;
+  const deleteUrl = `${BACKEND_URL}/api/v1/delete-website`;
   const { getToken } = useAuth();
   const [isExpanded, setIsExpanded] = useState(false);
   const { refreshWebsites } = useWebsites();
@@ -121,10 +295,10 @@ function WebsiteCard({ website, isDark }: { website: ProcessedWebsite; isDark: b
     try {
       setLoading(true);
       const toastId = toast.loading('Deleting website...');
-      const token = await getToken();
+      const token = await safeGetToken(getToken);
       await axios.delete(deleteUrl,
         {
-          headers: { Authorization: `Bearer ${token}` },
+          headers: token ? { Authorization: `Bearer ${token}` } : undefined,
           data: { id: website.id },
         });
       await refreshWebsites();
@@ -192,7 +366,6 @@ function WebsiteCard({ website, isDark }: { website: ProcessedWebsite; isDark: b
             )}
           </div>
 
-          {/* Latency trend chart */}
           <div className="mt-4">
             <p className={`text-sm mb-1 flex items-center gap-2 ${smallTextClass}`}>
               <Activity className="w-4 h-4" /> Latency (last 30 min)
@@ -216,16 +389,23 @@ function WebsiteCard({ website, isDark }: { website: ProcessedWebsite; isDark: b
   );
 }
 
+// ----------------- Navbar -----------------
 function Navbar({
   isDark,
   toggleTheme,
   nodesOnline = 0,
   onGetStarted,
+  walletPublicKey,
+  connectWallet,
+  disconnectWallet,
 }: {
   isDark: boolean;
   toggleTheme: () => void;
   nodesOnline?: number;
   onGetStarted?: () => void;
+  walletPublicKey?: string | null;
+  connectWallet?: () => Promise<void>;
+  disconnectWallet?: () => Promise<void>;
 }): JSX.Element {
   const [visible, setVisible] = useState(true);
   const prevY = useRef<number>(0);
@@ -257,27 +437,20 @@ function Navbar({
     return () => window.removeEventListener("scroll", handleScroll);
   }, []);
 
-  // Inline style fallback already handled earlier; here keep class variants but use isDark boolean
-  const navBgClass = isDark
-    ? 'bg-[#071025] bg-opacity-95 border-slate-800/40 shadow-2xl'
-    : 'bg-white/95 border-gray-200/60 shadow';
+  const navBgClass = isDark ? 'bg-[#071025] bg-opacity-95 border-slate-800/40 shadow-2xl' : 'bg-white/95 border-gray-200/60 shadow';
 
-  // <-- ADDED: read validator context values (non-invasive)
+  // read validator context safely
   const { validator, pendingPayoutsSol, setValidator: setValidatorInContext } = (() => {
     try {
       return useValidator();
     } catch {
-      // If context isn't provided, return safe defaults
       return { validator: null, pendingPayoutsSol: null, setValidator: undefined } as any;
     }
   })();
 
-  // helper to disconnect validator locally
   const handleDisconnectValidator = async () => {
     try {
-      // clear local storage
       try { localStorage.removeItem("validatorPublicKey"); } catch {}
-      // call possible wallet disconnect
       try {
         if (window.solana && typeof window.solana.disconnect === 'function') {
           await window.solana.disconnect();
@@ -285,13 +458,8 @@ function Navbar({
       } catch (err) {
         console.warn("Phantom disconnect failed:", err);
       }
-      // clear validator in context if function exists
       if (typeof setValidatorInContext === "function") {
-        try {
-          setValidatorInContext(null);
-        } catch (err) {
-          console.warn("setValidatorInContext failed:", err);
-        }
+        try { setValidatorInContext(null); } catch {}
       }
       toast.success("Wallet disconnected (local state cleared)");
     } catch (err) {
@@ -302,28 +470,25 @@ function Navbar({
 
   return (
     <nav
-      className={`fixed top-0 left-0 right-0 z-50 transition-all duration-300 ease-out transform ${
-        visible ? "opacity-100 translate-y-0 pointer-events-auto" : "opacity-0 -translate-y-2 pointer-events-none"
-      } ${navBgClass} backdrop-blur-md border-b`}
+      className={`fixed top-0 left-0 right-0 z-50 transition-all duration-300 ease-out transform ${visible ? "opacity-100 translate-y-0 pointer-events-auto" : "opacity-0 -translate-y-2 pointer-events-none"} ${navBgClass} backdrop-blur-md border-b`}
       role="navigation"
       aria-label="Main navigation"
     >
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         <div className="flex items-center justify-between h-16">
-          {/* Brand */}
-          <div className="flex items-center space-x-3">
+          <div
+            className="flex items-center space-x-3 cursor-pointer"
+            role="button"
+            title="Go home"
+            onClick={() => { try { window.location.assign('/'); } catch {} }}
+          >
             <div className="relative">
               <Network className={`w-8 h-8 ${isDark ? "text-blue-300" : "text-blue-600"} animate-pulse`} />
               <div className="absolute -top-1 -right-1 w-3 h-3 bg-green-500 rounded-full animate-ping" />
             </div>
-            <span
-              className={`text-xl font-bold ${isDark ? 'text-white' : 'text-slate-800'}`}
-            >
-              DecentWatch
-            </span>
+            <span className={`text-xl font-bold ${isDark ? 'text-white' : 'text-slate-800'}`}>DecentWatch</span>
           </div>
 
-          {/* Controls */}
           <div className="flex items-center space-x-6">
             <div className={`hidden md:flex items-center space-x-2 px-3 py-1 rounded-full ${isDark ? 'bg-emerald-900/20 text-emerald-300' : 'bg-emerald-100 text-emerald-700'}`}>
               <div className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse" />
@@ -331,34 +496,13 @@ function Navbar({
             </div>
 
             <button
-              onClick={() => {
-                try {
-                  toggleTheme();
-                } catch {
-                  // ignore
-                }
-              }}
+              onClick={() => { try { toggleTheme(); } catch {} }}
               aria-label="Toggle theme"
               className={`p-2 rounded-full transition-all duration-300 hover:scale-110 ${isDark ? 'bg-yellow-400/10 text-yellow-300' : 'bg-slate-100 text-slate-700'}`}
             >
               {isDark ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
             </button>
 
-            <button
-              onClick={() => {
-                try {
-                  if (typeof onGetStarted === "function") onGetStarted();
-                } catch {
-                  // ignore
-                }
-                window.location.assign("/tracker");
-              }}
-              className="px-6 py-2 rounded-full font-medium transition-all duration-300 hover:scale-105 shadow-lg bg-gradient-to-r from-blue-500 to-indigo-600 text-white hover:from-blue-600 hover:to-indigo-700"
-            >
-              Get Started
-            </button>
-
-            {/* Validator payout badge or disconnect button */}
             {validator ? (
               <>
                 <div className={`hidden sm:flex items-center px-3 py-1 rounded-full ${isDark ? 'bg-slate-700/40 text-slate-200' : 'bg-white/90 text-slate-800'} border ${isDark ? 'border-slate-600' : 'border-gray-200'}`}>
@@ -374,39 +518,56 @@ function Navbar({
                   Disconnect Wallet
                 </button>
               </>
-            ) : (
-              // If no validator, show nothing extra here — Dashboard / Become Validator flow will handle onboarding
-              null
-            )}
+            ) : null}
 
+            {/* Wallet connect UI */}
             <div className="flex items-center gap-3">
+              <div className="hidden sm:flex items-center space-x-2">
+                { (window as any).solana && (window as any).solana.isPhantom ? (
+                  walletPublicKey ? (
+                    <>
+                      <div className="text-sm px-3 py-1 rounded-full bg-slate-800/30 text-slate-200">
+                        {walletPublicKey.slice(0,4)}...{walletPublicKey.slice(-4)}
+                      </div>
+                      <button
+                        onClick={() => disconnectWallet && disconnectWallet()}
+                        className="px-3 py-1 rounded-md text-sm font-medium bg-white text-slate-700 border"
+                      >
+                        Disconnect
+                      </button>
+                    </>
+                  ) : (
+                    <button
+                      onClick={() => connectWallet && connectWallet()}
+                      className="px-3 py-1 rounded-md text-sm font-medium bg-blue-600 text-white"
+                    >
+                      Connect Wallet
+                    </button>
+                  )
+                ) : (
+                  <button
+                    onClick={() => window.open('https://phantom.app/', '_blank')}
+                    className="px-3 py-1 rounded-md text-sm font-medium bg-slate-100 text-slate-700"
+                  >
+                    Install Phantom
+                  </button>
+                )}
+              </div>
+
               <SignedOut>
                 <SignInButton>
-                  <button
-                    className={`${isDark ? 'px-4 py-2 rounded-lg text-sm font-medium bg-slate-700 text-slate-200 hover:bg-slate-600' : 'px-4 py-2 rounded-lg text-sm font-medium bg-white text-slate-700 hover:bg-slate-50'}`}
-                    type="button"
-                    onClick={() => window.location.assign("/tracker")}
-                  >
-                    Sign in
-                  </button>
+                  <button className={`${isDark ? 'px-4 py-2 rounded-lg text-sm font-medium bg-slate-700 text-slate-200 hover:bg-slate-600' : 'px-4 py-2 rounded-lg text-sm font-medium bg-white text-slate-700 hover:bg-slate-50'}`} type="button" onClick={() => window.location.assign("/tracker")}>Sign in</button>
                 </SignInButton>
 
                 <SignUpButton>
-                  <button
-                    className="px-4 py-2 rounded-lg text-sm font-medium bg-blue-600 text-white hover:bg-blue-700 shadow-sm"
-                    type="button"
-                    onClick={() => window.location.assign("/tracker")}
-                  >
-                    Sign up
-                  </button>
+                  <button className="px-4 py-2 rounded-lg text-sm font-medium bg-blue-600 text-white hover:bg-blue-700 shadow-sm" type="button" onClick={() => window.location.assign("/tracker")}>Sign up</button>
                 </SignUpButton>
               </SignedOut>
 
               <SignedIn>
-                <div className="ml-1">
-                  <UserButton afterSignOutUrl="/" />
-                </div>
+                <div className="ml-1"><UserButton afterSignOutUrl="/" /></div>
               </SignedIn>
+
             </div>
           </div>
         </div>
@@ -415,45 +576,121 @@ function Navbar({
   );
 }
 
+// ----------------- Main App page -----------------
 export default function App(): JSX.Element {
-  // THEME PERSISTENCE: read initial theme from localStorage if present
-  const savedTheme = (() => {
-    try {
-      return localStorage.getItem("theme");
-    } catch {
-      return null;
-    }
-  })();
-
+  // THEME PERSISTENCE:
+  const savedTheme = (() => { try { return localStorage.getItem("theme"); } catch { return null; } })();
   const [isDarkMode, setIsDarkMode] = useState<boolean>(() => {
     if (savedTheme === "dark") return true;
     if (savedTheme === "light") return false;
-    // fallback: check prefers-color-scheme
     if (typeof window !== "undefined" && window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches) {
       return true;
     }
     return false;
   });
 
-  const [isModalOpen, setIsModalOpen] = useState(false);
-  // assume hook shape; cast to avoid TS errors if hook types are unknown
+  // websites hook
   const { websites, refreshWebsites } = useWebsites() as { websites?: any[]; refreshWebsites: () => Promise<void> };
-  const { getToken } = useAuth();
 
-  // <-- ADDED: use validator context here as well (read-only usage, non-invasive)
-  const { validator } = (() => {
-    try {
-      return useValidator();
-    } catch {
-      return { validator: null } as any;
-    }
-  })();
+  // Clerk auth
+  const auth = (() => { try { return useAuth(); } catch { return undefined as any; } })();
+  const getToken = auth?.getToken;
 
-  // UI state so the user can see what's happening
+  // Validator context usage
+  const { validator } = (() => { try { return useValidator(); } catch { return { validator: null } as any; } })();
+
+  const [isModalOpen, setIsModalOpen] = useState(false);
   const [loadingWebsites, setLoadingWebsites] = useState<boolean>(true);
   const [websitesError, setWebsitesError] = useState<string | null>(null);
 
-  // ensure websites are fetched at mount (common reason for empty page)
+  // Solana connection & wallet state
+  const connection = useMemo(() => new Connection(clusterApiUrl(SOLANA_NETWORK), 'confirmed'), []);
+
+  const [walletPublicKey, setWalletPublicKey] = useState<string | null>(null);
+  const [walletConnecting, setWalletConnecting] = useState(false);
+
+  useEffect(() => {
+    try {
+      const p = (window as any).solana;
+      if (p && p.isPhantom) {
+        p.on && p.on('connect', (pk: any) => setWalletPublicKey(pk.toString()));
+        p.on && p.on('disconnect', () => setWalletPublicKey(null));
+        if (p.isConnected) {
+          setWalletPublicKey(p.publicKey?.toString() ?? null);
+        }
+      }
+    } catch {}
+  }, []);
+
+  const connectWallet = async () => {
+    try {
+      setWalletConnecting(true);
+      const provider = (window as any).solana;
+      if (!provider) {
+        toast.error('No Solana wallet available (install Phantom).');
+        return;
+      }
+      const resp = await provider.connect();
+      setWalletPublicKey(resp.publicKey?.toString() ?? null);
+      toast.success('Wallet connected');
+    } catch (err) {
+      console.error('connectWallet', err);
+      toast.error('Failed to connect wallet');
+    } finally {
+      setWalletConnecting(false);
+    }
+  };
+
+  const disconnectWallet = async () => {
+    try {
+      const provider = (window as any).solana;
+      if (provider?.disconnect) {
+        await provider.disconnect();
+      }
+      setWalletPublicKey(null);
+      toast.success('Wallet disconnected');
+    } catch (err) {
+      console.warn('disconnect failed', err);
+      setWalletPublicKey(null);
+    }
+  };
+
+  // validators count fetch (keeps original behavior)
+  const [validatorsCount, setValidatorsCount] = useState<number | null>(null);
+  useEffect(() => {
+    let mounted = true;
+    async function fetchValidatorsCount() {
+      try {
+        let token: string | null = null;
+        try { if (typeof getToken === "function") token = await getToken(); } catch { token = null; }
+        const urlCandidates = [`${BACKEND_URL}/api/v1/get-all-validator`];
+        for (const u of urlCandidates) {
+          try {
+            const headers: Record<string, string> = { Accept: "application/json" };
+            if (token) headers.Authorization = `Bearer ${token}`;
+            const r = await fetch(u, { credentials: "include", headers });
+            if (!r.ok) continue;
+            const j = await r.json().catch(() => null);
+            if (!j) continue;
+            if (Array.isArray(j)) { if (mounted) setValidatorsCount(j.length); return; }
+            if (Array.isArray((j as any).validators)) { if (mounted) setValidatorsCount((j as any).validators.length); return; }
+            if (typeof (j as any).count === "number") { if (mounted) setValidatorsCount((j as any).count); return; }
+            if (typeof j === "object" && j !== null) {
+              const maybeArray = Object.values(j).find(v => Array.isArray(v)) as any;
+              if (Array.isArray(maybeArray)) { if (mounted) setValidatorsCount(maybeArray.length); return; }
+            }
+          } catch (err) { console.debug("validator count candidate failed:", u, err); }
+        }
+        if (mounted) setValidatorsCount(null);
+      } catch (err) { console.debug("fetchValidatorsCount top-level error:", err); if (mounted) setValidatorsCount(null); }
+    }
+
+    void fetchValidatorsCount();
+    const id = window.setInterval(() => { void fetchValidatorsCount(); }, 30_000);
+    return () => { mounted = false; clearInterval(id); };
+  }, [getToken]);
+
+  // fetch websites at mount
   useEffect(() => {
     let mounted = true;
     const run = async () => {
@@ -473,9 +710,7 @@ export default function App(): JSX.Element {
       }
     };
     run();
-    return () => {
-      mounted = false;
-    };
+    return () => { mounted = false; };
   }, [refreshWebsites]);
 
   const processedWebsites: ProcessedWebsite[] | undefined = useMemo(() => {
@@ -541,7 +776,6 @@ export default function App(): JSX.Element {
     });
   }, [websites]);
 
-  // sync a light/dark class on <html> for any other global styles and persist the preference
   useEffect(() => {
     try {
       if (isDarkMode) {
@@ -551,25 +785,28 @@ export default function App(): JSX.Element {
         document.documentElement.classList.remove('dark');
         localStorage.setItem("theme", "light");
       }
-    } catch {
-      // localStorage might be unavailable — ignore
-    }
+    } catch {}
   }, [isDarkMode]);
 
   const toggleTheme = () => setIsDarkMode((s) => !s);
 
-  // page-level backgrounds dependent on theme
-  const pageBg = isDarkMode
-    ? 'bg-gradient-to-br from-[#071025] via-[#07172a] to-[#061028]'
-    : 'bg-gradient-to-br from-blue-50 via-indigo-50 to-cyan-50';
-
-  const pageTextColor = isDarkMode ? 'text-white' : 'text-gray-900';
+  const pageBg = isDarkMode ? 'bg-gradient-to-br from-[#071025] via-[#07172a] to-[#061028]' : 'bg-gradient-to-br from-blue-50 via-indigo-50 to-cyan-50';
   const headerTextColor = isDarkMode ? 'text-white' : 'text-gray-900';
   const addBtnClass = isDarkMode ? 'bg-blue-500 hover:bg-blue-600 text-white' : 'bg-blue-600 hover:bg-blue-700 text-white';
 
+  const nodesOnlineToShow = validatorsCount ?? (processedWebsites?.length ?? 0);
+
   return (
     <>
-      <Navbar isDark={isDarkMode} toggleTheme={toggleTheme} nodesOnline={processedWebsites?.length ?? 0} onGetStarted={() => window.location.assign("/get-started")} />
+      <Navbar
+        isDark={isDarkMode}
+        toggleTheme={toggleTheme}
+        nodesOnline={nodesOnlineToShow}
+        onGetStarted={() => window.location.assign("/get-started")}
+        walletPublicKey={walletPublicKey}
+        connectWallet={connectWallet}
+        disconnectWallet={disconnectWallet}
+      />
 
       <div className={`min-h-screen transition-colors duration-200 pt-20 ${pageBg}`}>
         <Toaster position="top-right" />
@@ -585,40 +822,23 @@ export default function App(): JSX.Element {
                 className={`flex items-center space-x-2 px-4 py-2 rounded-lg transition-colors duration-200 ${addBtnClass}`}
               >
                 <Plus className="w-4 h-4" />
-                <span>Add Website</span>
+                <span>Pay & Upload</span>
               </button>
             </div>
           </div>
 
-          {/* Loading / error / empty states */}
           {loadingWebsites ? (
             <div className={`py-20 text-center ${isDarkMode ? 'text-slate-300' : 'text-gray-500'}`}>Loading websites...</div>
           ) : websitesError ? (
             <div className="py-20 text-center text-red-500">
               <div>Failed to load websites: {websitesError}</div>
               <div className="mt-4">
-                <button
-                  onClick={async () => {
-                    setLoadingWebsites(true);
-                    setWebsitesError(null);
-                    try {
-                      await refreshWebsites();
-                    } catch (err: any) {
-                      console.error('Retry fetch failed', err);
-                      setWebsitesError(String(err?.message ?? err ?? 'Unknown error'));
-                    } finally {
-                      setLoadingWebsites(false);
-                    }
-                  }}
-                  className="px-4 py-2 bg-blue-600 text-white rounded"
-                >
-                  Retry
-                </button>
+                <button onClick={async () => { setLoadingWebsites(true); setWebsitesError(null); try { await refreshWebsites(); } catch (err: any) { console.error('Retry fetch failed', err); setWebsitesError(String(err?.message ?? err ?? 'Unknown error')); } finally { setLoadingWebsites(false); } }} className="px-4 py-2 bg-blue-600 text-white rounded">Retry</button>
               </div>
             </div>
           ) : !processedWebsites || processedWebsites.length === 0 ? (
             <div className={`py-20 text-center ${isDarkMode ? 'text-slate-300' : 'text-gray-500'}`}>
-              No websites yet. Click <button className="underline" onClick={() => setIsModalOpen(true)}>Add Website</button> to get started.
+              No websites yet. Click <button className="underline" onClick={() => setIsModalOpen(true)}>Pay & Upload</button> to get started.
             </div>
           ) : (
             <div className="space-y-4">
@@ -633,27 +853,14 @@ export default function App(): JSX.Element {
           isOpen={isModalOpen}
           isDark={isDarkMode}
           onClose={async (url) => {
-            if (!url) {
-              setIsModalOpen(false);
-              return;
-            }
-            let toastId: string | number | undefined;
-            try {
-              toastId = toast.loading('Adding website...');
-              const token = await getToken();
-              setIsModalOpen(false);
-              await axios.post(
-                `${backendUrl}/api/v1/create-website`,
-                { url },
-                { headers: { Authorization: `Bearer ${token}` } }
-              );
-              await refreshWebsites();
-              toast.success('Website added', { id: toastId });
-            } catch (error) {
-              console.error("Error creating website:", error);
-              toast.error('Failed to add website', { id: toastId });
+            setIsModalOpen(false);
+            if (url) {
+              try { await refreshWebsites(); } catch (err) { console.error(err); }
             }
           }}
+          connection={connection}
+          walletPublicKey={walletPublicKey}
+          getToken={getToken}
         />
       </div>
     </>

@@ -8,6 +8,7 @@ import CreateValidatorController from "../controller/CreateValidatorController.j
 import GetValidatorController from "../controller/GetValidatorController.js";
 import GetValidatorEarningsController from "../controller/GetValidatorEarningsController.js";
 import WithdrawController from "../controller/WithdrawController.js";
+import GetAllValidatorController from "../controller/GetAllValidatorController.js";
 
 const router = express.Router();
 
@@ -15,6 +16,7 @@ router.get("/get-all-websites", authMiddleware as RequestHandler, GetAllWebsites
 router.get("/get-website-status", authMiddleware as RequestHandler, GetWebsiteStatusController);
 router.get("/validator-earnings", authMiddleware as RequestHandler, GetValidatorEarningsController);
 router.get("/validator",authMiddleware as RequestHandler, GetValidatorController);
+router.get("/get-all-validator",authMiddleware as RequestHandler, GetAllValidatorController);
 
 
 router.post("/create-website", authMiddleware as RequestHandler, CreateWebsiteController);
