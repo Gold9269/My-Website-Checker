@@ -7,19 +7,14 @@ import {
   PublicKey,
   SystemProgram,
   Transaction,
-  sendAndConfirmTransaction,
   SendTransactionError,
 } from "@solana/web3.js";
 import bs58 from "bs58";
 
 const DEFAULT_RPC = process.env.SOLANA_RPC_URL_DEFAULT ?? "https://api.devnet.solana.com";
+const LAMPORTS_PER_SOL = 1_000_000_000;
 
-/**
- * Parse server payer keypair from env.
- * Supports:
- *  - JSON array string: "[12,34,...]" (recommended)
- *  - base58 string
- */
+// ---------------- helpers (unchanged / improved) ----------------
 function loadPayerFromEnv(): Keypair {
   const raw = process.env.SOLANA_PAYER_PRIVATE_KEY ?? "";
   if (!raw) throw new Error("SOLANA_PAYER_PRIVATE_KEY env var not set");
@@ -28,8 +23,7 @@ function loadPayerFromEnv(): Keypair {
     if (raw.trim().startsWith("[")) {
       const arr = JSON.parse(raw);
       if (!Array.isArray(arr)) throw new Error("invalid JSON array for secret key");
-      const u8 = Uint8Array.from(arr);
-      return Keypair.fromSecretKey(u8);
+      return Keypair.fromSecretKey(Uint8Array.from(arr));
     } else {
       const secret = bs58.decode(raw.trim());
       return Keypair.fromSecretKey(secret);
@@ -39,9 +33,6 @@ function loadPayerFromEnv(): Keypair {
   }
 }
 
-/**
- * Confirm a signature robustly by polling getSignatureStatuses.
- */
 async function confirmSignatureWithRetries(connection: Connection, signature: string, attempts = 12, intervalMs = 1500): Promise<boolean> {
   for (let i = 0; i < attempts; i++) {
     try {
@@ -51,79 +42,95 @@ async function confirmSignatureWithRetries(connection: Connection, signature: st
         if (info.err == null && (info.confirmationStatus === "confirmed" || info.confirmationStatus === "finalized" || info.confirmationStatus === "processed")) {
           return true;
         }
-        if (info.err) {
-          return false;
-        }
+        if (info.err) return false;
       }
-    } catch (err) {
-      // ignore transient RPC errors
+    } catch {
+      // ignore transient RPC error
     }
     await new Promise((r) => setTimeout(r, intervalMs));
   }
   return false;
 }
 
-/**
- * Build, sign, send and confirm a transaction using a fresh blockhash each attempt.
- * Retries if we detect the blockheight-expired error or transient RPC issues.
- */
-async function buildSignSendTxWithRetries(
-  connection: Connection,
-  payer: Keypair,
-  instructions: Parameters<Transaction["add"]>,
-  attempts = 4
-): Promise<string> {
-  // instructions: array of Instruction(s)
+async function buildSignSendTxWithRetries(connection: Connection, payer: Keypair, instructions: any[], attempts = 4): Promise<string> {
   for (let attempt = 1; attempt <= attempts; attempt++) {
     try {
-      // fetch fresh blockhash
       const latest = await connection.getLatestBlockhash("finalized");
-      const tx = new Transaction().add(...(instructions as any));
+      const tx = new Transaction().add(...instructions);
       tx.recentBlockhash = latest.blockhash;
       tx.feePayer = payer.publicKey;
 
-      // sign with payer - Keypair.sign is available via tx.sign(...)
       tx.sign(payer);
 
-      // send raw transaction
       const raw = tx.serialize();
       const sig = await connection.sendRawTransaction(raw, { skipPreflight: false });
-      // wait for confirmation via polling helper (do not rely solely on sendRawTransaction's internal confirm)
+
       const confirmed = await confirmSignatureWithRetries(connection, sig, 12, 1500);
       if (!confirmed) {
-        // check final status once
         const statusResp = await connection.getSignatureStatuses([sig]);
         const info = statusResp?.value?.[0];
         if (info?.err) {
           throw Object.assign(new Error("Transaction failed during confirmation"), { info, signature: sig });
         }
-        // if still not confirmed, treat as transient and let fallback below
-        throw new Error("Transaction not confirmed within retries (transient)");
+        throw new Error("Transaction not confirmed within retries");
       }
       return sig;
     } catch (err: any) {
-      // Detect blockheight expired or similar and retry
       const msg = String(err?.message ?? err);
-      const isBlockheightExpired = /block height exceeded|expired/i.test(msg) || err?.name === "TransactionExpiredBlockheightExceededError";
-      const isTimeout = /not confirmed in .* seconds|Transaction was not confirmed/i.test(msg) || err?.name === "TransactionExpiredTimeoutError";
-      // If it's clearly a blockheight expired or timeout, we'll retry (unless last attempt)
-      if (attempt < attempts && (isBlockheightExpired || isTimeout || /send transaction failed|Transaction simulation failed|transaction not confirmed/i.test(msg))) {
-        // small backoff
+      const retryable = /block height exceeded|expired|not confirmed|Transaction simulation failed|Transaction was not confirmed/i.test(msg);
+      if (attempt < attempts && retryable) {
         await new Promise((r) => setTimeout(r, 500 * attempt));
         continue;
       }
-      // Re-throw (with logs attached if available)
       throw err;
     }
   }
   throw new Error("Failed to send transaction after retries");
 }
 
+// Normalize DB pendingPayouts into lamports (robust)
+function normalizePendingToLamports(raw: any): number {
+  try {
+    if (raw == null) return 0;
+    if (typeof raw === "object" && raw.sol != null) {
+      const s = Number(raw.sol);
+      if (isNaN(s)) return 0;
+      return Math.max(0, Math.floor(s * LAMPORTS_PER_SOL));
+    }
+    if (typeof raw === "string") {
+      const t = raw.trim();
+      if (t.includes(".")) {
+        const n = Number(t);
+        if (isNaN(n)) return 0;
+        return Math.max(0, Math.floor(n * LAMPORTS_PER_SOL));
+      }
+      const n2 = Number(t);
+      if (isNaN(n2)) return 0;
+      return Math.max(0, Math.floor(n2));
+    }
+    if (typeof raw === "number") {
+      if (!Number.isFinite(raw) || isNaN(raw)) return 0;
+      if (!Number.isInteger(raw)) return Math.max(0, Math.floor(raw * LAMPORTS_PER_SOL));
+      return Math.max(0, Math.floor(raw));
+    }
+    const coerced = Number(raw);
+    if (!isNaN(coerced)) {
+      if (!Number.isInteger(coerced)) return Math.max(0, Math.floor(coerced * LAMPORTS_PER_SOL));
+      return Math.max(0, Math.floor(coerced));
+    }
+    return 0;
+  } catch (err) {
+    console.warn("[Withdraw] normalizePendingToLamports failed:", raw, err);
+    return 0;
+  }
+}
+
+// ---------------- controller ----------------
 const WithdrawController: RequestHandler = (req, res, next) => {
   (async () => {
     try {
-      const publicKey = String(req.body?.publicKey ?? "").trim();
-      if (!publicKey) {
+      const publicKeyStr = String(req.body?.publicKey ?? "").trim();
+      if (!publicKeyStr) {
         res.status(400).json({ ok: false, error: "missing publicKey" });
         return;
       }
@@ -135,19 +142,18 @@ const WithdrawController: RequestHandler = (req, res, next) => {
         return;
       }
 
-      const validator = await ValidatorModel.findOne({ publicKey }).exec();
+      const validator = await ValidatorModel.findOne({ publicKey: publicKeyStr }).exec();
       if (!validator) {
         res.status(404).json({ ok: false, error: "validator not found" });
         return;
       }
 
-      const pendingLamports = Number(validator.pendingPayouts ?? 0) || 0;
+      const pendingLamports = normalizePendingToLamports(validator.pendingPayouts);
       if (pendingLamports <= 0) {
-        res.status(400).json({ ok: false, error: "no pending payouts" });
+        res.status(400).json({ ok: false, error: "no pending payouts", details: { pendingRaw: validator.pendingPayouts } });
         return;
       }
 
-      // load payer keypair from env
       let payer: Keypair;
       try {
         payer = loadPayerFromEnv();
@@ -158,21 +164,21 @@ const WithdrawController: RequestHandler = (req, res, next) => {
       }
 
       const rpcUrl = process.env.SOLANA_RPC_URL ?? DEFAULT_RPC;
-      console.log("[WithdrawController] Using RPC:", rpcUrl);
+      console.log("[WithdrawController] RPC:", rpcUrl);
       const connection = new Connection(rpcUrl, "confirmed");
 
-      // compute rent-exempt minimum for a 0-data account
+      // rent-exempt minimum for 0 data account
       let rentExemptMin = 0;
       try {
         rentExemptMin = await connection.getMinimumBalanceForRentExemption(0);
       } catch (err) {
         console.warn("[WithdrawController] getMinimumBalanceForRentExemption failed:", err);
-        // fall back to a reasonable default (devnet typical)
-        rentExemptMin = 890_880;
+        rentExemptMin = 890_880; // safe fallback
       }
 
-      // check recipient existence & balance
-      const recipientPubkey = new PublicKey(publicKey);
+      const recipientPubkey = new PublicKey(publicKeyStr);
+
+      // check recipient account
       let recipientInfo = null;
       try {
         recipientInfo = await connection.getAccountInfo(recipientPubkey);
@@ -181,79 +187,85 @@ const WithdrawController: RequestHandler = (req, res, next) => {
         recipientInfo = null;
       }
 
-      // determine if top-up needed (recipient missing and pending < rentExemptMin)
-      const needsTopUp = !recipientInfo && pendingLamports < rentExemptMin;
-      const topUpAmount = needsTopUp ? rentExemptMin - pendingLamports : 0;
-      const totalNeeded = pendingLamports + topUpAmount;
+      // Add a small buffer for fees to avoid edge-case rejections
+      const FEE_BUFFER = 5_000; // lamports
 
-      // fetch payer balance
-      let payerBalance = 0;
-      try {
-        payerBalance = await connection.getBalance(payer.publicKey);
-      } catch (err) {
-        console.error("[WithdrawController] failed to get payer balance:", err);
-        res.status(500).json({ ok: false, error: "failed to get payer balance", details: String(err) });
-        return;
-      }
+      // CASE A: account missing -> ensure first transfer is at least rentExemptMin (+ buffer)
+      if (!recipientInfo) {
+        // amount we will send in the single transfer to create & fund account
+        const amountToSend = Math.max(pendingLamports, rentExemptMin + FEE_BUFFER);
 
-      // If payer lacks funds, attempt airdrop on devnet
-      if (payerBalance < totalNeeded) {
-        if (rpcUrl.includes("devnet")) {
-          const needed = totalNeeded - payerBalance;
-          try {
-            console.log(`[WithdrawController] payer insufficient, requesting airdrop ${needed} lamports`);
-            const aSig = await connection.requestAirdrop(payer.publicKey, needed);
-            const ok = await confirmSignatureWithRetries(connection, aSig, 16, 2000);
-            if (!ok) {
-              // refresh balance anyway and check
-              const newBal = await connection.getBalance(payer.publicKey);
-              if (newBal < totalNeeded) {
-                res.status(400).json({
-                  ok: false,
-                  error: "server payer still has insufficient funds after airdrop",
-                  details: { payerBalance: newBal, required: totalNeeded },
-                });
-                return;
-              }
-              payerBalance = newBal;
-            } else {
-              payerBalance = await connection.getBalance(payer.publicKey);
-            }
-          } catch (airErr) {
-            console.error("[WithdrawController] airdrop attempt failed:", airErr);
-            res.status(400).json({
-              ok: false,
-              error: "server payer has insufficient funds and airdrop failed",
-              details: String(airErr),
-            });
-            return;
-          }
-        } else {
-          res.status(400).json({
-            ok: false,
-            error: "server payer has insufficient funds",
-            details: { payerBalance, required: totalNeeded },
-          });
+        // sanity check: don't send astronomical amounts by mistake
+        if (amountToSend <= 0) {
+          res.status(500).json({ ok: false, error: "invalid computed create amount", details: { pendingLamports, rentExemptMin } });
           return;
         }
-      }
 
-      // If recipient is missing AND we need topUp, do topUp first (separate tx).
-      if (needsTopUp && topUpAmount > 0) {
+        // ensure payer has balance (try airdrop on devnet)
+        let payerBalance = 0;
         try {
-          console.log(`[WithdrawController] Recipient missing, sending topUp ${topUpAmount} lamports to create account`);
-          const topUpSig = await buildSignSendTxWithRetries(connection, payer, [
-            SystemProgram.transfer({ fromPubkey: payer.publicKey, toPubkey: recipientPubkey, lamports: topUpAmount }),
-          ], 5);
-          // ensure account exists now
-          const refreshed = await connection.getAccountInfo(recipientPubkey);
-          if (!refreshed) {
-            res.status(500).json({ ok: false, error: "topUp transfer did not create recipient account", details: { topUpSig } });
+          payerBalance = await connection.getBalance(payer.publicKey);
+        } catch (err) {
+          console.error("[WithdrawController] getBalance failed:", err);
+          res.status(500).json({ ok: false, error: "failed to read payer balance", details: String(err) });
+          return;
+        }
+
+        if (payerBalance < amountToSend) {
+          if ((rpcUrl || "").includes("devnet")) {
+            const need = amountToSend - payerBalance;
+            try {
+              const aSig = await connection.requestAirdrop(payer.publicKey, need);
+              const ok = await confirmSignatureWithRetries(connection, aSig, 16, 2000);
+              if (!ok) {
+                const newBal = await connection.getBalance(payer.publicKey);
+                if (newBal < amountToSend) {
+                  res.status(400).json({ ok: false, error: "payer insufficient after airdrop", details: { payerBalance: newBal, required: amountToSend } });
+                  return;
+                }
+                payerBalance = newBal;
+              } else {
+                payerBalance = await connection.getBalance(payer.publicKey);
+              }
+            } catch (airErr) {
+              console.error("[WithdrawController] airdrop failed:", airErr);
+              res.status(400).json({ ok: false, error: "payer insufficient and airdrop failed", details: String(airErr) });
+              return;
+            }
+          } else {
+            res.status(400).json({ ok: false, error: "server payer has insufficient funds", details: { payerBalance, required: amountToSend } });
             return;
           }
+        }
+
+        // Send single transfer that will create the account and fund it (>= rentExemptMin)
+        try {
+          console.log(`[WithdrawController] recipient missing - sending ${amountToSend} lamports (will create account)`);
+          const sig = await buildSignSendTxWithRetries(connection, payer, [
+            SystemProgram.transfer({ fromPubkey: payer.publicKey, toPubkey: recipientPubkey, lamports: amountToSend }),
+          ], 5);
+
+          // Confirm account now exists
+          const refreshed = await connection.getAccountInfo(recipientPubkey);
+          if (!refreshed) {
+            res.status(500).json({ ok: false, error: "topUp transfer did not create recipient account", details: { sig } });
+            return;
+          }
+
+          // Clear pending payouts in DB (we funded them — if amountToSend > pendingLamports, that overpaid slightly)
+          try {
+            await ValidatorModel.findByIdAndUpdate(validator._id, { $set: { pendingPayouts: 0 } }).exec();
+          } catch (dbErr) {
+            console.error("[WithdrawController] payout succeeded but clearing DB failed:", dbErr);
+            res.json({ ok: true, txSignature: sig, note: "payout succeeded but clearing DB failed; check logs" });
+            return;
+          }
+
+          res.json({ ok: true, txSignature: sig });
+          return;
         } catch (err: any) {
-          console.error("WithdrawController: topUp transfer failed:", err);
-          if (err && (err as SendTransactionError).transactionLogs) {
+          console.error("[WithdrawController] topUp/create transfer failed:", err);
+          if ((err as SendTransactionError).transactionLogs) {
             res.status(500).json({
               ok: false,
               error: "topUp transaction failed",
@@ -270,13 +282,37 @@ const WithdrawController: RequestHandler = (req, res, next) => {
         }
       }
 
-      // Now perform payout transfer
+      // CASE B: recipient exists -> just send pendingLamports
       try {
+        // ensure payer has balance to cover pendingLamports + small buffer for fees
+        let payerBal = await connection.getBalance(payer.publicKey);
+        const required = pendingLamports + FEE_BUFFER;
+        if (payerBal < required) {
+          if ((rpcUrl || "").includes("devnet")) {
+            const need = required - payerBal;
+            const aSig = await connection.requestAirdrop(payer.publicKey, need);
+            const ok = await confirmSignatureWithRetries(connection, aSig, 16, 2000);
+            if (!ok) {
+              const newBal = await connection.getBalance(payer.publicKey);
+              if (newBal < required) {
+                res.status(400).json({ ok: false, error: "payer insufficient after airdrop", details: { payerBalance: newBal, required } });
+                return;
+              }
+              payerBal = newBal;
+            } else {
+              payerBal = await connection.getBalance(payer.publicKey);
+            }
+          } else {
+            res.status(400).json({ ok: false, error: "server payer has insufficient funds", details: { payerBalance: payerBal, required } });
+            return;
+          }
+        }
+
+        console.log(`[WithdrawController] sending payout ${pendingLamports} lamports to ${publicKeyStr}`);
         const payoutSig = await buildSignSendTxWithRetries(connection, payer, [
           SystemProgram.transfer({ fromPubkey: payer.publicKey, toPubkey: recipientPubkey, lamports: pendingLamports }),
         ], 5);
 
-        // Final check of signature status
         const finalStatus = await connection.getSignatureStatuses([payoutSig]);
         const info = finalStatus?.value?.[0];
         if (info?.err) {
@@ -284,15 +320,20 @@ const WithdrawController: RequestHandler = (req, res, next) => {
           return;
         }
 
-        // Clear pending payouts only after confirmed success
-        validator.pendingPayouts = 0;
-        await validator.save();
+        // Clear pending payouts
+        try {
+          await ValidatorModel.findByIdAndUpdate(validator._id, { $set: { pendingPayouts: 0 } }).exec();
+        } catch (dbErr) {
+          console.error("[WithdrawController] payout succeeded but clearing DB failed:", dbErr);
+          res.json({ ok: true, txSignature: payoutSig, note: "payout succeeded but clearing DB failed; check logs" });
+          return;
+        }
 
         res.json({ ok: true, txSignature: payoutSig });
         return;
       } catch (err: any) {
         console.error("WithdrawController: payout failed:", err);
-        if (err && (err as SendTransactionError).transactionLogs) {
+        if ((err as SendTransactionError).transactionLogs) {
           res.status(500).json({
             ok: false,
             error: "transaction failed",

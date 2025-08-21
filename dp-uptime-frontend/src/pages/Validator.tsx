@@ -24,15 +24,12 @@ const LAMPORTS_PER_SOL = 1_000_000_000;
 const CHECK_TIMEOUT_MS = 10_000;
 const EARNINGS_POLL_MS = 3000;
 const WS_PING_INTERVAL_MS = 20_000;
-
-// new: how often to poll the backend for validator count (ms)
 const VALIDATOR_POLL_MS = 10_000;
 
 type Point = { time: string; value: number };
 
 const backendUrl = "http://localhost:5000";
 
-/* ------------------ Navbar (same look as tracker) ------------------ */
 function Navbar({
   isDark,
   toggleTheme,
@@ -66,7 +63,6 @@ function Navbar({
     <nav className={`fixed top-0 left-0 right-0 z-50 ${navBgClass} backdrop-blur-md border-b`}> 
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         <div className="flex items-center justify-between h-16">
-          {/* Clickable brand that navigates home */}
           <div
             className="flex items-center space-x-3 cursor-pointer"
             title="Go home"
@@ -134,7 +130,7 @@ function Navbar({
   );
 }
 
-/* ------------------ Validator page (logic preserved, improved polling) ------------------ */
+/* ------------------ Validator page ------------------ */
 export default function Validator(): JSX.Element {
   const { getToken } = useAuth();
 
@@ -148,7 +144,7 @@ export default function Validator(): JSX.Element {
   });
   useEffect(() => { try { if (isDarkMode) { document.documentElement.classList.add("dark"); localStorage.setItem("theme", "dark"); } else { document.documentElement.classList.remove("dark"); localStorage.setItem("theme", "light"); } } catch {} }, [isDarkMode]);
 
-  // state & refs (unchanged)
+  // state & refs
   const [publicKey, setPublicKey] = useState<string>(() => { try { return localStorage.getItem("validatorPublicKey") ?? ""; } catch { return ""; } });
   const [monitoring, setMonitoring] = useState(false);
   const [tokenInput, setTokenInput] = useState<string>(() => { try { return localStorage.getItem("validator_bearer_token") ?? ""; } catch { return ""; } });
@@ -158,7 +154,7 @@ export default function Validator(): JSX.Element {
   const reconnectTimerRef = useRef<number | null>(null);
   const backoffRef = useRef<number>(1000);
 
-  // NEW: flag to indicate a user-initiated stop (prevents automatic reconnect)
+  // user-initiated stop prevents auto-reconnect
   const userRequestedDisconnectRef = useRef<boolean>(false);
 
   const [livePoints, setLivePoints] = useState<Point[]>([]);
@@ -168,7 +164,7 @@ export default function Validator(): JSX.Element {
   const [withdrawOpen, setWithdrawOpen] = useState(false);
   const [withdrawLoading, setWithdrawLoading] = useState(false);
 
-  // NEW: validators count state (used to show nodes in Navbar)
+  // validators count
   const [validatorsCount, setValidatorsCount] = useState<number | null>(null);
   const validatorsPollRef = useRef<number | null>(null);
   const validatorsBackoffRef = useRef<number>(1);
@@ -239,13 +235,11 @@ export default function Validator(): JSX.Element {
     return { ok: false, status: 0, url: null, resp: null, text: null, json: null, error: lastNetworkErr };
   }
 
-  // ---------- NEW: validator-count polling ----------
-  // tries to call /get-all-validator; if server returns array or { validators: [...] } we use the length
+  // fetch validators count (unchanged)
   async function fetchValidatorsCount(): Promise<boolean> {
     try {
       const res = await fetchWithPrefixes("/get-all-validator", { method: "GET", credentials: "include" });
       if (!res.ok) {
-        // try /validators/count (optional alternative endpoint)
         const res2 = await fetchWithPrefixes("/validators/count", { method: "GET", credentials: "include" });
         if (res2.ok && res2.json && typeof res2.json.count === "number") {
           setValidatorsCount(res2.json.count);
@@ -268,12 +262,10 @@ export default function Validator(): JSX.Element {
         setValidatorsCount(body.validators.length);
         return true;
       }
-      // maybe body has count property
       if (typeof body.count === "number") {
         setValidatorsCount(body.count);
         return true;
       }
-      // fallback: set 0 (explicit)
       setValidatorsCount(0);
       return true;
     } catch (err) {
@@ -282,7 +274,6 @@ export default function Validator(): JSX.Element {
     }
   }
 
-  // polling effect: visibility-aware + exponential backoff on failure
   useEffect(() => {
     let mounted = true;
     async function tick() {
@@ -291,35 +282,27 @@ export default function Validator(): JSX.Element {
       if (!mounted) return;
       if (ok) {
         validatorsBackoffRef.current = 1;
-        // schedule next normal poll
         validatorsPollRef.current = window.setTimeout(tick, VALIDATOR_POLL_MS);
       } else {
-        // backoff on failure
         validatorsBackoffRef.current = Math.min(8, validatorsBackoffRef.current * 2 || 2);
         const delay = Math.min(VALIDATOR_POLL_MS * validatorsBackoffRef.current, 60_000);
         validatorsPollRef.current = window.setTimeout(tick, delay);
       }
     }
 
-    // visibility handling: if tab hidden, pause polling; resume on visible
     function onVisibilityChange() {
       if (document.hidden) {
         if (validatorsPollRef.current) { window.clearTimeout(validatorsPollRef.current); validatorsPollRef.current = null; }
       } else {
-        // kick off an immediate fetch when tab becomes visible
         void tick();
       }
     }
 
     document.addEventListener("visibilitychange", onVisibilityChange);
-
-    // immediate fetch & start polling
     void tick();
 
-    // respond to storage events (other tabs updating validator state)
     function onStorage(e: StorageEvent) {
       if (e.key === "validatorPublicKey" || e.key === "validatorSessionToken") {
-        // quick refresh when relevant keys change
         void fetchValidatorsCount();
       }
     }
@@ -333,12 +316,11 @@ export default function Validator(): JSX.Element {
     };
   }, [tokenInput, sessionToken, getToken]);
 
-  // ---------- REPLACED: Earnings effect (WS-first + fallback polling with backoff, batching) ----------
+  // ---------- Earnings effect (unchanged behavior mostly) ----------
   useEffect(() => {
     if (!publicKey) return;
     let mounted = true;
 
-    // batching for incoming points to avoid rapid re-renders
     let batchedPoints: Point[] | null = null;
     let flushTimer: number | null = null;
     const FLUSH_MS = 250;
@@ -347,18 +329,12 @@ export default function Validator(): JSX.Element {
       if (flushTimer) return;
       flushTimer = window.setTimeout(() => {
         flushTimer = null;
-
-        // take a snapshot copy of batchedPoints so the updater closes over a stable immutable array
         const toFlush = batchedPoints ? batchedPoints.slice() : null;
-        // clear the shared buffer immediately so new incoming points start a fresh batch
         batchedPoints = null;
-
         if (!toFlush || toFlush.length === 0) return;
-
         setLivePoints((prev) => {
           const map = new Map<string, number>();
           prev.forEach(p => map.set(p.time, p.value));
-          // iterate over snapshot copy (no risk of null)
           toFlush.forEach(p => map.set(p.time, p.value));
           const arr = Array.from(map.entries()).map(([time, value]) => ({ time, value }));
           arr.sort((a, b) => new Date(a.time).getTime() - new Date(b.time).getTime());
@@ -399,10 +375,8 @@ export default function Validator(): JSX.Element {
       }
     }
 
-    // visibility helper
     function isVisible() { try { return !document.hidden; } catch { return true; } }
 
-    // fallback polling when WS closed
     let pollTimer: number | null = null;
     let backoffMultiplier = 1;
     const BASE_POLL_MS = EARNINGS_POLL_MS;
@@ -411,7 +385,6 @@ export default function Validator(): JSX.Element {
     async function pollOnce() {
       if (!mounted) return;
       if (!isVisible()) {
-        // re-evaluate soon
         pollTimer = window.setTimeout(pollOnce, Math.min(BASE_POLL_MS * backoffMultiplier, MAX_POLL_MS));
         return;
       }
@@ -431,10 +404,8 @@ export default function Validator(): JSX.Element {
       backoffMultiplier = 1;
     }
 
-    // initial fetch to populate history
     fetchEarningsNow();
 
-    // watch websocket status and toggle polling accordingly
     const wsCheckInterval = window.setInterval(() => {
       try {
         const ws = wsRef.current;
@@ -442,16 +413,13 @@ export default function Validator(): JSX.Element {
         if (isWsOpen) {
           stopFallbackPolling();
         } else {
-          // only poll if tab visible
           if (isVisible()) startFallbackPolling();
         }
       } catch (err) {
-        // on weird error, start polling as fallback
         startFallbackPolling();
       }
     }, 1000);
 
-    // visibility change handler
     function onVisibilityChange() {
       if (!isVisible()) {
         stopFallbackPolling();
@@ -462,7 +430,6 @@ export default function Validator(): JSX.Element {
     }
     document.addEventListener("visibilitychange", onVisibilityChange);
 
-    // cleanup
     return () => {
       mounted = false;
       try { if (wsCheckInterval) window.clearInterval(wsCheckInterval); } catch {}
@@ -472,7 +439,7 @@ export default function Validator(): JSX.Element {
     };
   }, [publicKey, tokenInput, sessionToken, getToken]);
 
-  // ---------- Browser-check helper (used by WS validate messages) ----------
+  // ---------- Browser-check helper ----------
   async function performBrowserCheck(url: string, timeoutMs = CHECK_TIMEOUT_MS) {
     const start = Date.now();
     try {
@@ -499,29 +466,101 @@ export default function Validator(): JSX.Element {
     try { if (ws.readyState === WebSocket.OPEN) { ws.send(JSON.stringify(obj)); return true; } return false; } catch (err) { console.debug("[Validator] safeSend failed", err, obj); return false; }
   }
 
+  // ---------- NEW: create-or-reuse persistent session token ----------
+  async function ensureSessionTokenOnce(): Promise<string | null> {
+    try {
+      const existing = (() => { try { return localStorage.getItem("validatorSessionToken"); } catch { return null; } })();
+      if (existing) {
+        setSessionToken(existing);
+        return existing;
+      }
+
+      if ((window as any).solana && (window as any).solana.isPhantom && (window as any).solana.signMessage) {
+        try {
+          const msg = `Validator session token for ${publicKey || "unknown"} at ${Date.now()}`;
+          const msgBytes = new TextEncoder().encode(msg);
+          const signed = await (window as any).solana.signMessage(msgBytes, "utf8").catch(() => null);
+          const sig = (signed as any)?.signature ?? signed;
+          if (sig) {
+            const token = JSON.stringify(Array.from(sig));
+            try { localStorage.setItem("validatorSessionToken", token); } catch {}
+            setSessionToken(token);
+            toast.success("Validator session created (signed once)");
+            return token;
+          }
+        } catch (err) {
+          console.debug("[Validator] one-time sign for session token failed:", err);
+        }
+      }
+
+      try {
+        const arr = new Uint8Array(16);
+        if (typeof crypto !== "undefined" && (crypto as any).getRandomValues) (crypto as any).getRandomValues(arr);
+        let hex = Array.from(arr).map((b) => b.toString(16).padStart(2, "0")).join("");
+        const token = `rnd:${hex}`;
+        try { localStorage.setItem("validatorSessionToken", token); } catch {}
+        setSessionToken(token);
+        toast("Validator session created (fallback)", { icon: "🔑" });
+        return token;
+      } catch (err) {
+        console.debug("[Validator] fallback random token creation failed:", err);
+        return null;
+      }
+    } catch (err) {
+      console.debug("[Validator] ensureSessionTokenOnce error:", err);
+      return null;
+    }
+  }
+
+  // stable tab id (generate once)
+  const tabIdRef = useRef<string>((() => {
+    try {
+      const anyCrypto = (window as any).crypto ?? (globalThis as any).crypto;
+      return anyCrypto?.randomUUID?.() ?? `tab-${Date.now()}-${Math.floor(Math.random() * 10000)}`;
+    } catch {
+      return `tab-${Date.now()}-${Math.floor(Math.random() * 10000)}`;
+    }
+  })());
+
+  // NEW: track server-side explicit rejection to prevent auto reconnect
+  const subscriptionRejectedRef = useRef<boolean>(false);
+
+  // NEW: dedupe duplicate_detected messages per incoming tab
+  const duplicateNotifyMapRef = useRef<Map<string, number>>(new Map());
+  const DUPLICATE_NOTIFY_TTL_MS = 30_000;
+
   function openWsAndRegister(pk: string) {
     if (!pk) { toast.error("No public key provided"); return; }
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) return;
     try { wsRef.current?.close(); } catch {}
     if (pingTimerRef.current) { window.clearInterval(pingTimerRef.current); pingTimerRef.current = null; }
 
-    // ensure any scheduled reconnect is cleared (we are explicitly opening now)
     if (reconnectTimerRef.current) {
       window.clearTimeout(reconnectTimerRef.current);
       reconnectTimerRef.current = null;
     }
 
+    // clear subscriptionRejected only on a fresh manual open (we don't want automatic retries to clear it)
+    // manual starts should call startMonitoring which clears this flag
+    // Here we will not clear it to preserve behavior -> startMonitoring clears it
+
     const ws = new WebSocket(WS_URL);
     wsRef.current = ws;
 
+    let pingStartedLocal = false;
+    let subscribedConfirmed = false;
+
     ws.onopen = async () => {
       backoffRef.current = 1000;
-      pingTimerRef.current = window.setInterval(() => { try { if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "ping", data: { ts: Date.now() } })); } catch {} }, WS_PING_INTERVAL_MS);
-      setMonitoring(true);
-      toast.success("Connected to Hub");
-      try { safeSend(ws, { type: "subscribe_earnings", data: { publicKey: pk, sessionToken: sessionToken ?? localStorage.getItem("validatorSessionToken") } }); } catch (err) { console.debug("[Validator] subscribe_earnings error", err); }
-      // when a new WS connection is established, refresh the validators count (helps update other tabs quickly)
-      void fetchValidatorsCount();
+      // ensure session token exists
+      await ensureSessionTokenOnce().catch((e) => console.debug("[Validator] ensureSessionTokenOnce failed:", e));
+
+      // send subscribe_earnings with tabId & sessionToken — wait for 'subscribed' response
+      try {
+        safeSend(ws, { type: "subscribe_earnings", data: { publicKey: pk, sessionToken: sessionToken ?? localStorage.getItem("validatorSessionToken"), tabId: tabIdRef.current } });
+      } catch (err) {
+        console.debug("[Validator] subscribe_earnings error", err);
+      }
     };
 
     ws.onmessage = async (ev) => {
@@ -529,11 +568,41 @@ export default function Validator(): JSX.Element {
       try { payload = JSON.parse(ev.data); } catch (err) { console.debug("[Validator] ws JSON parse failed", err, ev.data); return; }
 
       try {
+        if (payload.type === "subscribed") {
+          const body = payload.data ?? {};
+          if (body.ok) {
+            subscribedConfirmed = true;
+            subscriptionRejectedRef.current = false;
+            userRequestedDisconnectRef.current = false;
+            setMonitoring(true);
+            if (!pingStartedLocal) {
+              pingTimerRef.current = window.setInterval(() => {
+                try { if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "ping", data: { ts: Date.now() } })); } catch {}
+              }, WS_PING_INTERVAL_MS);
+              pingStartedLocal = true;
+            }
+            toast.success("Connected to Hub");
+            void fetchValidatorsCount();
+            return;
+          } else {
+            subscriptionRejectedRef.current = true;
+            const reason = body.error ?? body.message ?? "Subscription rejected by Hub";
+            if (reason === "duplicate_connection") {
+              toast.error("Duplicate connection detected: another tab/device is already connected for this wallet.");
+            } else {
+              toast.error("Subscribe failed: " + String(reason));
+            }
+            // prevent auto reconnect until user manually restarts
+            userRequestedDisconnectRef.current = true;
+            try { ws.close(); } catch {}
+            return;
+          }
+        }
+
         if (payload.type === "earning") {
           const lamports = Number(payload.data?.value || 0);
           const solValue = lamports / LAMPORTS_PER_SOL;
           const pt = { time: String(payload.data?.time ?? new Date().toISOString()), value: solValue };
-          // batch small incoming updates: push straight into state with single update
           setLivePoints((prev) => {
             const next = [...prev, pt];
             if (next.length > 500) next.shift();
@@ -543,6 +612,19 @@ export default function Validator(): JSX.Element {
             const ppSol = Number(payload.data.pendingPayouts || 0) / LAMPORTS_PER_SOL;
             setPendingPayouts(ppSol);
           }
+          return;
+        }
+
+        if (payload.type === "duplicate_detected") {
+          const incomingTabId = payload.data?.incomingTabId ?? "unknown";
+          const now = Date.now();
+          const map = duplicateNotifyMapRef.current;
+          const expiry = map.get(incomingTabId) ?? 0;
+          if (expiry > now) return;
+          map.set(incomingTabId, now + DUPLICATE_NOTIFY_TTL_MS);
+          for (const [k, v] of map.entries()) { if (v < now) map.delete(k); }
+          const msg = payload.data?.message ?? "Another connection for this wallet detected (another tab/device).";
+          toast.error(msg);
           return;
         }
 
@@ -570,20 +652,12 @@ export default function Validator(): JSX.Element {
           }
 
           const effectiveLatency = ok ? measuredLatency : Math.max(measuredLatency, CHECK_TIMEOUT_MS + 5000);
-          const reply: any = { type: "validate", data: { validatorId: localStorage.getItem("validatorId"), callbackId, websiteId, status: ok ? "Good" : "Bad", latency: effectiveLatency, sessionToken: sessionToken ?? localStorage.getItem("validatorSessionToken") } };
 
-          if (!reply.data.sessionToken) {
-            try {
-              if ((window as any).solana && (window as any).solana.isPhantom) {
-                const msg = `Replying to ${callbackId} at ${Date.now()}`;
-                const msgBytes = new TextEncoder().encode(msg);
-                const signed = await (window as any).solana.signMessage?.(msgBytes, "utf8").catch(() => null);
-                const sig = (signed as any)?.signature ?? signed;
-                if (sig) reply.data.signedMessage = JSON.stringify(Array.from(sig));
-              }
-            } catch (err) { console.debug("[Validator] signing reply failed", err); }
-          }
+          // Always include sessionToken (created once)
+          const currentSessionToken = sessionToken ?? (() => { try { return localStorage.getItem("validatorSessionToken"); } catch { return null; } })();
+          const reply: any = { type: "validate", data: { validatorId: localStorage.getItem("validatorId"), callbackId, websiteId, status: ok ? "Good" : "Bad", latency: effectiveLatency, sessionToken: currentSessionToken } };
 
+          // Do NOT sign every validate (avoid repeated Phantom popups)
           try { const okSent = safeSend(ws, reply); console.debug("[Validator] sent validate reply", { okSent, reply }); } catch (err) { console.error("[Validator] failed to send validate reply", err, reply); }
           return;
         }
@@ -597,24 +671,25 @@ export default function Validator(): JSX.Element {
       if (pingTimerRef.current) { window.clearInterval(pingTimerRef.current); pingTimerRef.current = null; }
       setMonitoring(false);
 
-      // User intentionally stopped — do not auto-reconnect
-      if (userRequestedDisconnectRef.current) {
-        toast.info("Disconnected from Hub (manual)");
-        // make sure backoff resets for future manual start
-        backoffRef.current = 1000;
-      } else {
-        // Unexpected disconnect — attempt reconnect with backoff
-        toast.error("Disconnected from Hub (will retry)");
-        const d = backoffRef.current || 1000;
-        // schedule reconnect
-        reconnectTimerRef.current = window.setTimeout(() => {
-          const pk2 = publicKey || localStorage.getItem("validatorPublicKey") || "";
-          if (pk2) openWsAndRegister(pk2);
-          backoffRef.current = Math.min(60_000, Math.floor((backoffRef.current || 1000) * 1.6));
-        }, d);
+      // If server explicitly rejected subscription, don't auto-reconnect automatically.
+      if (subscriptionRejectedRef.current) {
+        console.info("[Validator] subscription was rejected by server — not auto-reconnecting until user restarts");
+        return;
       }
 
-      // optionally refresh validators count on any close
+      if (userRequestedDisconnectRef.current) {
+        console.info("[Validator] user requested disconnect - not auto-reconnecting");
+        return;
+      }
+
+      toast.error("Disconnected from Hub (will retry)");
+      const d = backoffRef.current || 1000;
+      reconnectTimerRef.current = window.setTimeout(() => {
+        const pk2 = publicKey || localStorage.getItem("validatorPublicKey") || "";
+        if (pk2) openWsAndRegister(pk2);
+        backoffRef.current = Math.min(60_000, Math.floor((backoffRef.current || 1000) * 1.6));
+      }, d);
+
       void fetchValidatorsCount();
     };
 
@@ -629,8 +704,9 @@ export default function Validator(): JSX.Element {
           const gotPk = r?.publicKey?.toString?.() ?? "";
           setPublicKey(gotPk);
           try { localStorage.setItem("validatorPublicKey", gotPk); } catch {}
-          // Ensure this is not treated as a user stop
+          // manual start clears user-stop and subscription rejection
           userRequestedDisconnectRef.current = false;
+          subscriptionRejectedRef.current = false;
           openWsAndRegister(gotPk);
           void fetchValidatorsCount();
         }).catch((err: any) => toast.error("Phantom connect failed: " + String(err)));
@@ -641,36 +717,30 @@ export default function Validator(): JSX.Element {
       }
     }
 
-    // If user explicitly clicked Start, clear the user-stop flag so onclose can reconnect
     userRequestedDisconnectRef.current = false;
+    subscriptionRejectedRef.current = false;
     openWsAndRegister(pk);
   }
 
   function stopMonitoring() {
     try {
-      // mark that user intentionally stopped — prevents auto-reconnect in ws.onclose
       userRequestedDisconnectRef.current = true;
-
-      // clear any scheduled reconnect attempt (if scheduled)
+      subscriptionRejectedRef.current = false;
       if (reconnectTimerRef.current) {
         window.clearTimeout(reconnectTimerRef.current);
         reconnectTimerRef.current = null;
       }
-
-      // close websocket and timers
       try { wsRef.current?.close(); } catch {}
       wsRef.current = null;
       if (pingTimerRef.current) { window.clearInterval(pingTimerRef.current); pingTimerRef.current = null; }
       setMonitoring(false);
       toast.success("Stopped monitoring (manual)");
-      // reset backoff so next manual start is fresh
       backoffRef.current = 1000;
     } catch (err) {
       console.error("stopMonitoring error:", err);
     }
   }
 
-  // fetch once (used by Withdraw modal flow)
   async function fetchEarningsOnce() {
     if (!publicKey) return;
     const path = `/validator-earnings?publicKey=${encodeURIComponent(publicKey)}&range=day`;
@@ -694,7 +764,6 @@ export default function Validator(): JSX.Element {
       } else {
         toast.success("Withdraw successful — tx: " + (result.json?.txSignature ?? "unknown"));
         setPendingPayouts(0);
-        // after a successful withdraw, refresh validators count too (optional)
         void fetchValidatorsCount();
       }
     } catch (err) { console.error("[Withdraw] error", err); toast.error("Withdraw error: " + String(err)); }
@@ -730,40 +799,31 @@ export default function Validator(): JSX.Element {
     };
   }, []);
 
-  // Styling tweaks only: provide a subtle layered background and cleaner glass card look
+  // styling variables
   const pageBg = isDarkMode ? "bg-gradient-to-br from-[#071025] via-[#07172a] to-[#061028]" : "bg-gradient-to-br from-blue-50 via-indigo-50 to-cyan-50";
   const headerTextColor = isDarkMode ? "text-white" : "text-gray-900";
   const bodyTextColor = isDarkMode ? "text-white" : "text-slate-900";
   const secondaryTextColor = isDarkMode ? "text-slate-300" : "text-slate-600";
   const inputTextColor = isDarkMode ? "text-white" : "text-slate-900";
-  const placeholderColor = isDarkMode ? "placeholder:text-slate-300" : "placeholder:text-slate-500"; 
 
-  /* ---------- RENDER ---------- */
   return (
     <>
-      {/* pass the dynamic validatorsCount into Navbar (default 0) */}
       <Navbar isDark={isDarkMode} toggleTheme={() => setIsDarkMode((s) => !s)} nodesOnline={validatorsCount ?? 0} onGetStarted={() => window.location.assign("/get-started")} />
 
       <div className={`relative min-h-screen transition-colors duration-200 pt-20 ${pageBg}`}>
-        {/* Decorative background layers (purely visual, accessible-hidden) */}
         <div aria-hidden className="pointer-events-none fixed inset-0 -z-20">
           <div className="absolute -top-40 -left-40 w-[680px] h-[680px] rounded-full blur-3xl opacity-40" style={{ background: 'radial-gradient(circle at 30% 30%, rgba(99,102,241,0.55), transparent 28%), radial-gradient(circle at 70% 70%, rgba(236,72,153,0.28), transparent 30%)', transform: 'translateZ(0)' }} />
           <div className="absolute -bottom-40 -right-40 w-[620px] h-[620px] rounded-full blur-2xl opacity-30" style={{ background: 'radial-gradient(circle at 40% 40%, rgba(14,165,233,0.32), transparent 25%)' }} />
-          {/* subtle grid / texture */}
           <div className="absolute inset-0 -z-10" style={{ backgroundImage: 'radial-gradient(rgba(255,255,255,0.015) 1px, transparent 1px)', backgroundSize: '14px 14px', opacity: 0.6 }} />
         </div>
 
         <Toaster position="top-right" />
         <div className="max-w-3xl mx-auto py-12 px-4">
-          {/* outer subtle gradient border to make the card pop */}
           <div className="rounded-xl p-1" style={{ background: isDarkMode ? 'linear-gradient(90deg, rgba(99,102,241,0.08), rgba(129,140,248,0.04))' : 'linear-gradient(90deg, rgba(59,130,246,0.06), rgba(99,102,241,0.03))' }}>
-            {/* subtle bluish card with slight blush accent at edge */}
             <div className="rounded-xl overflow-hidden shadow-2xl" style={{ boxShadow: isDarkMode ? '0 20px 60px rgba(2,6,23,0.6)' : '0 10px 40px rgba(15,23,42,0.08)' }}>
               <div
                 className="p-6"
                 style={{
-                  // Keep the card primarily bluish/navy, with a very subtle blush accent on the far edge.
-                  // This is intentionally low-opacity so the card reads bluish but has a gentle warmth.
                   background: isDarkMode ? 'linear-gradient(135deg, rgba(8,18,33,0.92) 0%, rgba(18,32,54,0.9) 65%, rgba(203,60,124,0.04) 100%)' : 'linear-gradient(135deg, rgba(255,255,255,0.88) 0%, rgba(245,248,255,0.92) 65%)',
                   border: isDarkMode ? '1px solid rgba(255,255,255,0.03)' : '1px solid rgba(2,6,23,0.04)',
                   backdropFilter: 'saturate(120%) blur(6px)',
@@ -814,7 +874,6 @@ export default function Validator(): JSX.Element {
           </div>
         </div>
 
-        {/* Withdraw Modal */}
         {withdrawOpen && (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
             <div className="bg-white rounded-lg max-w-md w-full p-6 text-gray-900">

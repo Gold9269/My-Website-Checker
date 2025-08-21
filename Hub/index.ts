@@ -1,4 +1,4 @@
-// Hub/index.ts — final fixed, runtime-safe version
+// Hub/index.ts — final fixed, runtime-safe version (with owner-id / validator-id casting and improved diagnostics)
 import dotenv from "dotenv";
 dotenv.config();
 
@@ -14,7 +14,6 @@ import nodemailer from "nodemailer";
 
 /**
  * NOTE: previously there was a `import type { SignupIncomingMessage, IncomingMessage } from "../dp-uptime-backend/common/index.ts";`
- * In some ts-node/esm setups that still causes the loader to try to resolve the .ts file at runtime and crash before bootstrap.
  * To be safe at runtime we keep these as `any`-aliases here.
  */
 type SignupIncomingMessage = any;
@@ -30,19 +29,14 @@ process.on("uncaughtException", (err: unknown) => {
       if (err.stack) console.error("stack:", err.stack);
       else console.error("error (no stack):", util.inspect(err, { depth: null }));
     } else {
-      // non-Error thrown
       console.error("Non-Error thrown:", util.inspect(err, { showHidden: true, depth: null }));
       try {
-        // also attempt JSON print
         console.error("JSON:", JSON.stringify(err));
-      } catch {
-        // ignore
-      }
+      } catch { /* ignore */ }
     }
   } catch (logErr) {
     console.error("Failed logging uncaughtException:", logErr);
   } finally {
-    // keep exit to avoid undefined state; use non-zero exit
     process.exit(1);
   }
 });
@@ -58,9 +52,7 @@ process.on("unhandledRejection", (reason: unknown) => {
       console.error("Reason:", util.inspect(reason, { showHidden: true, depth: null }));
       try {
         console.error("JSON:", JSON.stringify(reason));
-      } catch {
-        // ignore
-      }
+      } catch { /* ignore */ }
     }
   } catch (logErr) {
     console.error("Failed logging unhandledRejection:", logErr);
@@ -176,7 +168,17 @@ async function hasConsecutiveBadTicks(websiteId: any, required: number, lookback
 }
 
 // ---------------- state ----------------
-const availableValidators: { validatorId: string; socket: WebSocket; publicKey: string; sessionToken?: string | null }[] = [];
+// availableValidators now tracks optional tabId and lastNotified fields
+const availableValidators: {
+  validatorId: string;
+  socket: WebSocket;
+  publicKey: string;
+  sessionToken?: string | null;
+  tabId?: string | null;
+  lastNotifiedFromTab?: string | null;
+  lastNotifiedAt?: number | null;
+}[] = [];
+
 const CALLBACKS: { [callbackId: string]: (data: IncomingMessage) => void } = {};
 const COST_PER_VALIDATION = 100;
 
@@ -214,13 +216,13 @@ async function signupHandler(ws: WebSocket, { ip, publicKey, signedMessage, call
     if (validator) {
       console.log("Existing validator found:", validator._id?.toString?.());
       ws.send(JSON.stringify({ type: "signup", data: { validatorId: validator._id, callbackId } }));
-      addAvailableValidator(validator._id.toString(), ws, validator.publicKey);
+      addAvailableValidator(validator._id.toString(), ws, validator.publicKey, null, null);
       return;
     }
     const newValidator = await ValidatorModel.create({ ip, publicKey, location: "unknown" });
     console.log("Created validator:", newValidator._id?.toString?.());
     ws.send(JSON.stringify({ type: "signup", data: { validatorId: newValidator._id, callbackId } }));
-    addAvailableValidator(newValidator._id.toString(), ws, newValidator.publicKey);
+    addAvailableValidator(newValidator._id.toString(), ws, newValidator.publicKey, null, null);
   } catch (err) {
     console.error("[HUB] signupHandler DB error:", err);
   }
@@ -238,6 +240,7 @@ async function persistTickAndPayoutFallback(websiteId: any, websiteOwnerId: any,
   }
   const castValidatorId = castId(validatorId);
   const castWebsiteId = castId(websiteId);
+  const castWebsiteOwnerId = castId(websiteOwnerId);
 
   // Try transaction first
   try {
@@ -249,12 +252,20 @@ async function persistTickAndPayoutFallback(websiteId: any, websiteOwnerId: any,
         const tickId = tickDoc._id;
         console.debug("[HUB] Tx: created tick", tickId?.toString?.());
 
-        const websiteUpdateRes: any = await Website.updateOne({ _id: castWebsiteId, userId: websiteOwnerId }, { $push: { ticks: tickId } }, { session });
+        const websiteUpdateRes: any = await Website.updateOne({ _id: castWebsiteId, userId: castWebsiteOwnerId }, { $push: { ticks: tickId } }, { session });
         const matched = websiteUpdateRes.matchedCount ?? (websiteUpdateRes as any).n ?? (websiteUpdateRes as any).nMatched ?? 0;
         const modified = websiteUpdateRes.modifiedCount ?? (websiteUpdateRes as any).nModified ?? 0;
         console.debug("[HUB] Tx: website update result", { matched, modified });
 
         if (matched === 0 && modified === 0) {
+          console.warn("[HUB] Tx: website update matched 0 — Dumping values for debug:",
+            {
+              castWebsiteId: String(castWebsiteId),
+              castWebsiteOwnerId: String(castWebsiteOwnerId),
+              websiteIdType: Object.prototype.toString.call(castWebsiteId),
+              websiteOwnerIdType: Object.prototype.toString.call(castWebsiteOwnerId),
+            }
+          );
           throw new Error("Website update matched 0 docs (owner mismatch or missing) - aborting tx for fallback");
         }
 
@@ -287,18 +298,41 @@ async function persistTickAndPayoutFallback(websiteId: any, websiteOwnerId: any,
     const tickDoc = await WebsiteTick.create({ websiteId: castWebsiteId, validatorId: castValidatorId, status, latency, createdAt: new Date() });
     console.debug("[HUB] Fallback: created tick", tickDoc._id?.toString?.());
 
-    const pushRes: any = await Website.updateOne({ _id: castWebsiteId, userId: websiteOwnerId }, { $push: { ticks: tickDoc._id } });
+    // Try guarded push first (preserves owner check); if that doesn't match, do an unguarded push as a last resort
+    const pushRes: any = await Website.updateOne({ _id: castWebsiteId, userId: castWebsiteOwnerId }, { $push: { ticks: tickDoc._id } });
     const matchedPush = pushRes.matchedCount ?? (pushRes as any).n ?? 0;
     const modifiedPush = pushRes.modifiedCount ?? (pushRes as any).nModified ?? 0;
     if (matchedPush === 0 && modifiedPush === 0) {
-      console.warn("[HUB] Non-transactional push: website not found or owner mismatch. Tick created but not linked to website.");
+      // Owner mismatch or website not found under that owner — log and attempt unguarded push so tick is linked
+      console.warn("[HUB] Non-transactional push: website not found or owner mismatch. Dumping values:",
+        { castWebsiteId: String(castWebsiteId), castWebsiteOwnerId: String(castWebsiteOwnerId), pushRes });
+      try {
+        const unguardedPushRes: any = await Website.updateOne({ _id: castWebsiteId }, { $push: { ticks: tickDoc._id } });
+        const matchedU = unguardedPushRes.matchedCount ?? (unguardedPushRes as any).n ?? 0;
+        const modifiedU = unguardedPushRes.modifiedCount ?? (unguardedPushRes as any).nModified ?? 0;
+        if (matchedU === 0 && modifiedU === 0) {
+          console.warn("[HUB] Unguarded push also failed — website may not exist. pushRes:", unguardedPushRes);
+        } else {
+          console.log("[HUB] Unguarded push succeeded — tick linked despite owner mismatch.");
+        }
+      } catch (unguardErr) {
+        console.error("[HUB] Unguarded push attempt failed:", unguardErr);
+      }
+      console.warn("[HUB] Non-transactional push: website not found or owner mismatch. Tick created but owner-guard failed.");
     } else {
       console.log("[HUB] Pushed tick id into website.ticks (non-transactional)");
     }
 
+    // Update validator pending payouts (non-transactional), using cast id
     const updatedValidator = await ValidatorModel.findByIdAndUpdate(castValidatorId, { $inc: { pendingPayouts: COST_PER_VALIDATION } }, { new: true, lean: true }).exec();
     if (!updatedValidator) {
-      console.warn("[HUB] Validator update matched 0 docs — validatorId may be invalid.");
+      console.warn("[HUB] Validator update matched 0 docs — validatorId may be invalid.", { castValidatorId: String(castValidatorId) });
+      try {
+        const maybeValidator = await ValidatorModel.findById(castValidatorId).lean();
+        console.warn("[HUB] Validator findById check (post-failure) ->", maybeValidator ? { id: String(maybeValidator._id), pendingPayouts: maybeValidator.pendingPayouts } : "not found");
+      } catch (vErr) {
+        console.error("[HUB] Validator findById after failed update threw:", vErr);
+      }
     } else {
       console.log("[HUB] Updated validator pending payouts (non-transactional) ->", updatedValidator._id?.toString?.(), updatedValidator.pendingPayouts);
       try { await broadcastEarningToValidator(String(updatedValidator._id), COST_PER_VALIDATION); } catch (e) { /* noop */ }
@@ -356,14 +390,33 @@ async function tryNotifyOwnerIfNeeded(websiteId: any, websiteOwnerId: any, statu
 const CRON_INTERVAL_MS = Number(process.env.CRON_INTERVAL_MS ?? 60_000);
 let cronInterval: NodeJS.Timeout | null = null;
 
-function addAvailableValidator(validatorId: string, socket: WebSocket, publicKey: string, sessionToken?: string | null) {
-  const exists = availableValidators.find((v) => v.validatorId === validatorId || v.socket === socket);
-  if (exists) {
-    if (sessionToken) exists.sessionToken = sessionToken;
+function addAvailableValidator(validatorId: string, socket: WebSocket, publicKey: string, sessionToken?: string | null, tabId?: string | null) {
+  // If a record for the same socket exists, update it
+  const existsSocket = availableValidators.find((v) => v.socket === socket);
+  if (existsSocket) {
+    existsSocket.sessionToken = sessionToken ?? existsSocket.sessionToken;
+    existsSocket.tabId = tabId ?? existsSocket.tabId;
     return;
   }
-  availableValidators.push({ validatorId, socket, publicKey, sessionToken: sessionToken ?? null });
-  console.log("[HUB] Validator added to availableValidators:", validatorId);
+
+  // If a validator entry with same validatorId & same tabId exists, replace its socket
+  for (let i = 0; i < availableValidators.length; i++) {
+    const v = availableValidators[i];
+    if (String(v.validatorId) === String(validatorId) && tabId && v.tabId && v.tabId === tabId) {
+      // replace socket in-place
+      try { v.socket.close(); } catch { /* ignore */ }
+      v.socket = socket;
+      v.publicKey = publicKey;
+      v.sessionToken = sessionToken ?? v.sessionToken;
+      v.tabId = tabId;
+      console.log("[HUB] Replaced existing validator socket for same validatorId+tabId:", validatorId, tabId);
+      return;
+    }
+  }
+
+  // Otherwise push new entry
+  availableValidators.push({ validatorId, socket, publicKey, sessionToken: sessionToken ?? null, tabId: tabId ?? null, lastNotifiedFromTab: null, lastNotifiedAt: null });
+  console.log("[HUB] Validator added to availableValidators:", validatorId, tabId ?? "<no-tab>");
   startCronIfNeeded();
 }
 
@@ -537,7 +590,7 @@ async function importAndRebindModels() {
   });
 }
 
-// ---------------- bootstrap ----------------
+// ----------------bootstrap----------------
 (async function bootstrap() {
   try {
     const MONGO_URI = process.env.MONGO_URI ?? "mongodb://127.0.0.1:27017/dp-uptime";
@@ -581,12 +634,13 @@ async function importAndRebindModels() {
               const maybePublicKey = data.data?.publicKey ?? null;
               const maybeValidatorId = data.data?.validatorId ?? null;
               const incomingSessionToken = data.data?.sessionToken ?? null;
+              const incomingTabId = data.data?.tabId ?? null;
               let dbValidator: any = null;
               if (maybePublicKey) dbValidator = await ValidatorModel.findOne({ publicKey: maybePublicKey }).lean();
               else if (maybeValidatorId) dbValidator = await ValidatorModel.findById(maybeValidatorId).lean();
 
               if (dbValidator) {
-                addAvailableValidator(dbValidator._id.toString(), ws, dbValidator.publicKey, incomingSessionToken ?? null);
+                addAvailableValidator(dbValidator._id.toString(), ws, dbValidator.publicKey, incomingSessionToken ?? null, incomingTabId ?? null);
                 ws.send(JSON.stringify({ type: "resume", data: { ok: true, validatorId: dbValidator._id.toString() } }));
               } else {
                 ws.send(JSON.stringify({ type: "resume", data: { ok: false } }));
@@ -606,17 +660,58 @@ async function importAndRebindModels() {
             try {
               const pk = data.data && data.data.publicKey;
               const incomingSessionToken = data.data?.sessionToken ?? null;
-              if (pk) {
-                const v = await ValidatorModel.findOne({ publicKey: pk }).lean();
-                if (v) {
-                  addAvailableValidator(v._id.toString(), ws, v.publicKey, incomingSessionToken ?? null);
-                  ws.send(JSON.stringify({ type: "subscribed", data: { ok: true, validatorId: v._id.toString() } }));
-                } else {
-                  ws.send(JSON.stringify({ type: "subscribed", data: { ok: false, error: "validator not found" } }));
-                }
-              } else {
+              const incomingTabId = data.data?.tabId ?? null;
+              if (!pk) {
                 ws.send(JSON.stringify({ type: "subscribed", data: { ok: false, error: "missing publicKey" } }));
+                return;
               }
+
+              const v = await ValidatorModel.findOne({ publicKey: pk }).lean();
+              if (!v) {
+                ws.send(JSON.stringify({ type: "subscribed", data: { ok: false, error: "validator not found" } }));
+                return;
+              }
+
+              // Find an existing connected validator entry for this validator id
+              const existing = availableValidators.find((a) => String(a.validatorId) === String(v._id));
+
+              if (existing) {
+                // If same tabId (client reconnect for same tab), replace socket (allow reconnect)
+                if (existing.tabId && incomingTabId && existing.tabId === incomingTabId) {
+                  console.log("[HUB] subscribe_earnings: same tab reconnect (replace socket)", v._id.toString(), incomingTabId);
+                  try { existing.socket.close(); } catch { /* ignore */ }
+                  addAvailableValidator(v._id.toString(), ws, v.publicKey, incomingSessionToken ?? null, incomingTabId ?? null);
+                  ws.send(JSON.stringify({ type: "subscribed", data: { ok: true, validatorId: v._id.toString() } }));
+                  return;
+                }
+
+                // different tab/device -> reject subscription and notify existing socket (but avoid rapid duplicate notifications)
+                console.warn("[HUB] subscribe_earnings: duplicate connection detected for validator", v._id.toString(), { existingTabId: existing.tabId, incomingTabId });
+
+                ws.send(JSON.stringify({ type: "subscribed", data: { ok: false, error: "duplicate_connection", message: "Multiple connections for this wallet detected (another tab/device)." } }));
+
+                // send duplicate_detected to existing socket only if not recently notified for this incomingTabId
+                const NOW = Date.now();
+                const NOTIFY_WINDOW_MS = 30_000; // avoid notifying about same incomingTabId more than once in this window
+                const lastFrom = existing.lastNotifiedFromTab ?? null;
+                const lastAt = existing.lastNotifiedAt ?? 0;
+                if (!(lastFrom === incomingTabId && (NOW - lastAt) < NOTIFY_WINDOW_MS)) {
+                  try {
+                    existing.socket.send(JSON.stringify({ type: "duplicate_detected", data: { message: "Another connection for this wallet detected (another tab/device).", incomingTabId } }));
+                    existing.lastNotifiedFromTab = incomingTabId ?? null;
+                    existing.lastNotifiedAt = NOW;
+                  } catch (sendErr) {
+                    console.warn("[HUB] failed to notify existing socket about duplicate", sendErr);
+                  }
+                } else {
+                  console.debug("[HUB] skipping duplicate_detected notify (already notified recently) for", v._id.toString(), incomingTabId);
+                }
+                return;
+              }
+
+              // No existing entry: accept and register
+              addAvailableValidator(v._id.toString(), ws, v.publicKey, incomingSessionToken ?? null, incomingTabId ?? null);
+              ws.send(JSON.stringify({ type: "subscribed", data: { ok: true, validatorId: v._id.toString() } }));
             } catch (err) {
               console.warn("[HUB] subscribe_earnings handler error:", err);
               ws.send(JSON.stringify({ type: "subscribed", data: { ok: false, error: String(err) } }));
