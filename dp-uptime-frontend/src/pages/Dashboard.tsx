@@ -46,6 +46,7 @@ import { WaveAnimation } from "../components/WaveAnimation";
 import { useWebsites } from "../context/websites";
 import { useValidator } from "../context/validator";
 import { useUI } from "../context/ui";
+import axios from "axios";
 
 const BACKEND = import.meta.env.VITE_API_BASE ?? "http://localhost:5000";
 
@@ -1084,24 +1085,40 @@ const handlePlayToggle = async () => {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-
-  // newsletter demo
-  async function handleSubscribe(e?: React.FormEvent) {
-    if (e) e.preventDefault();
-    if (!newsletterEmail || !newsletterEmail.includes("@")) {
-      toast.error("Please enter a valid email.");
-      return;
-    }
-    setSubmittingNewsletter(true);
-    try {
-      toast.success("Subscribed! We'll keep you updated on Web3 monitoring innovations.");
-      setNewsletterEmail("");
-    } catch (err) {
-      toast.error("Failed to subscribe.");
-    } finally {
-      setSubmittingNewsletter(false);
-    }
+  
+async function safeGetToken(getTokenFn?: typeof getToken) {
+  try {
+    if (!getTokenFn) return null;
+    const t = await getTokenFn();
+    return t ?? null;
+  } catch {
+    return null;
   }
+}
+ async function handleSubscribe(e?: React.FormEvent) {
+  if (e) e.preventDefault();
+  if (!newsletterEmail || !newsletterEmail.includes("@")) {
+    toast.error("Please enter a valid email.");
+    return;
+  }
+  setSubmittingNewsletter(true);
+  try {
+    const token = getToken ? await safeGetToken(getToken) : null;
+    const headers = token ? { Authorization: `Bearer ${token}` } : {};
+    const resp = await axios.post(`${BACKEND}/api/v1/subscribe`, { email: newsletterEmail }, { headers, withCredentials: true });
+    if (resp?.data?.ok) {
+      toast.success("Subscribed! Check your inbox for a confirmation.");
+      setNewsletterEmail("");
+    } else {
+      toast.error("Subscription failed.");
+    }
+  } catch (err: any) {
+    console.error("subscribe err:", err);
+    toast.error(err?.response?.data?.error ?? "Failed to subscribe.");
+  } finally {
+    setSubmittingNewsletter(false);
+  }
+}
 
   // CSS for reveal animations + improved glass styles for metrics section
   useEffect(() => {

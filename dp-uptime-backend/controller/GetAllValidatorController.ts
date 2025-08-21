@@ -1,24 +1,17 @@
-// src/controller/GetAllValidatorController.ts
 import { RequestHandler } from "express";
-import mongoose from "mongoose";
+import ValidatorModel from "../model/Validator.model.js";
 
 /**
  * GET /api/v1/get-all-validator
  *
  * Returns an array of validators (safe fields only) and a count.
- * Protected by whatever auth middleware your router attaches.
+ * Only validators with isOnline === true are returned.
  */
 const GetAllValidatorController: RequestHandler = async (req, res, next): Promise<void> => {
   try {
-    const ValidatorModel = mongoose.connection.models?.Validator;
-    if (!ValidatorModel) {
-      res.status(500).json({ ok: false, error: "server misconfiguration: Validator model missing" });
-      return;
-    }
-
-    // Find all validators. Project only safe fields to avoid leaking secrets (e.g. sessionToken).
+    // Find online validators. Project only safe fields to avoid leaking secrets (e.g. sessionToken).
     const validators = await ValidatorModel.find(
-      {},
+      { isOnline: true },
       {
         publicKey: 1,
         location: 1,

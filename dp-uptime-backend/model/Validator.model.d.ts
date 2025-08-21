@@ -9,6 +9,7 @@ export interface IValidator extends mongoose.Document {
   ticks: mongoose.Types.ObjectId[];
   createdAt?: Date;
   updatedAt?: Date;
+  isOnline: boolean
 }
 
 /**

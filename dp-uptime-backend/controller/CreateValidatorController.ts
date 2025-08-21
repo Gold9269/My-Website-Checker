@@ -1,4 +1,3 @@
-// controllers/CreateValidatorController.ts
 import { Request, Response, NextFunction } from "express";
 import ValidatorModel from "../model/Validator.model.js";
 import { validationResult } from "express-validator";
@@ -20,7 +19,7 @@ export default async function CreateValidatorController(
       return;
     }
 
-    const { publicKey, location, ip, signedMessage, signature } = req.body ?? {};
+    const { publicKey, location, ip } = req.body ?? {};
 
     if (!publicKey || typeof publicKey !== "string") {
       res.status(400).json({ message: "publicKey is required" });
@@ -40,6 +39,7 @@ export default async function CreateValidatorController(
       ip: ip || "0.0.0.0",
       pendingPayouts: 0,
       ticks: [],
+      isOnline: false, 
     });
 
     await validator.save();

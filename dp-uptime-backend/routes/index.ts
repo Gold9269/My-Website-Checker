@@ -9,6 +9,9 @@ import GetValidatorController from "../controller/GetValidatorController.js";
 import GetValidatorEarningsController from "../controller/GetValidatorEarningsController.js";
 import WithdrawController from "../controller/WithdrawController.js";
 import GetAllValidatorController from "../controller/GetAllValidatorController.js";
+import { SubscribeController } from "../controller/SubscribeController.js";
+import OnlineStatusController from "../controller/OnlineStatusController.js";
+import OfflineStatusController from "../controller/OfflineStatusController.js";
 
 const router = express.Router();
 
@@ -22,7 +25,9 @@ router.get("/get-all-validator",authMiddleware as RequestHandler, GetAllValidato
 router.post("/create-website", authMiddleware as RequestHandler, CreateWebsiteController);
 router.post("/create-validator", authMiddleware as RequestHandler,CreateValidatorController );
 router.post("/withdraw", authMiddleware as RequestHandler, WithdrawController);
-
+router.post("/subscribe",  authMiddleware as RequestHandler,SubscribeController);
+router.post("/change-to-online",  authMiddleware as RequestHandler,OnlineStatusController);
+router.post("/change-to-offline",  authMiddleware as RequestHandler,OfflineStatusController);
 
 
 router.delete("/delete-website", authMiddleware as RequestHandler, DeleteWebsiteController);

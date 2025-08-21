@@ -1,4 +1,3 @@
-// src/controllers/GetValidatorController.ts
 import { RequestHandler } from "express";
 import ValidatorModel from "../model/Validator.model.js";
 
@@ -16,7 +15,7 @@ const GetValidatorController: RequestHandler = async (req, res) => {
       return;
     }
 
-    // Return validator info including pendingPayouts
+    // Return validator info including pendingPayouts and isOnline
     res.status(200).json({ validator });
     return;
   } catch (err) {

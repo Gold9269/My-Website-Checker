@@ -1,9 +1,10 @@
 import React, { useEffect, useRef, useState } from "react";
 import { Globe, Moon, Sun, Network, TrendingUp, Zap, Activity, DollarSign, Eye, EyeOff, Sparkles, Wifi, WifiOff, Power, PowerOff } from "lucide-react";
-import { useAuth, SignedIn, SignedOut, SignInButton, SignUpButton, UserButton } from "@clerk/clerk-react";
+import { useAuth, SignedIn, SignedOut, SignInButton, SignUpButton, UserButton, useUser } from "@clerk/clerk-react";
 import toast, { Toaster } from "react-hot-toast";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, Area, AreaChart } from "recharts";
 import { useValidator } from "../context/validator";
+import axios from "axios";
 
 const WS_URL = import.meta.env.VITE_WS_URL ?? "ws://localhost:8081";
 const API_BASE_RAW = (import.meta.env.VITE_API_BASE ?? "http://localhost:5000").replace(/\/$/, "");
@@ -37,54 +38,106 @@ function Navbar({
     try { return useValidator(); } catch { return { validator: null, pendingPayoutsSol: null, setValidator: undefined } as any; }
   })();
 
-  const handleConnect = async () => {
-    try {
-      if ((window as any).solana && (window as any).solana.isPhantom) {
-        try {
-          const resp = await (window as any).solana.connect();
-          const gotPk = resp?.publicKey?.toString?.() ?? "";
-          if (!gotPk) {
-            toast.error("Phantom connect returned no public key");
-            return;
-          }
-          try { localStorage.setItem("validatorPublicKey", gotPk); } catch {}
-          try { onValidatorConnect?.(gotPk); } catch (err) { console.debug("onValidatorConnect callback error:", err); }
-          if (typeof setValidatorInContext === "function") setValidatorInContext(gotPk);
-          toast.success("Wallet connected successfully");
-          return;
-        } catch (err) {
-          console.debug("Phantom connect failed:", err);
-          toast.error("Phantom connect failed: " + String(err));
-        }
-      }
-      const manualPk = prompt("Paste your Solana public key to connect as validator:");
-      if (manualPk && manualPk.trim()) {
-        const pk = manualPk.trim();
-        try { localStorage.setItem("validatorPublicKey", pk); } catch {}
-        try { onValidatorConnect?.(pk); } catch (err) { console.debug("onValidatorConnect cb error:", err); }
-        if (typeof setValidatorInContext === "function") setValidatorInContext(pk);
-        toast.success("Validator key set successfully");
-      } else {
-        toast("Connect cancelled");
-      }
-    } catch (err) {
-      console.error("handleConnect error:", err);
-      toast.error("Connect error");
-    }
-  };
+// NOTE: make sure `useUser` from Clerk is used in the component and `isSignedIn` is available:
+const { isSignedIn } = useUser();
 
-  const handleDisconnect = async () => {
-    try {
-      try { localStorage.removeItem("validatorPublicKey"); } catch {}
-      try { if ((window as any).solana?.disconnect) await (window as any).solana.disconnect(); } catch (err) { console.warn("Phantom disconnect failed:", err); }
-      if (typeof setValidatorInContext === "function") setValidatorInContext(null);
-      try { onValidatorDisconnect?.(); } catch (err) { console.debug("onValidatorDisconnected cb error:", err); }
-      toast.success("Wallet disconnected successfully");
-    } catch (err) {
-      console.error("Disconnect failed:", err);
-      toast.error("Failed to disconnect");
+const handleConnect = async () => {
+  try {
+    // Require Clerk sign-in first
+    if (!isSignedIn) {
+      toast.error("Please sign in to connect your wallet.");
+      return;
     }
-  };
+
+    // Phantom flow
+    if ((window as any).solana && (window as any).solana.isPhantom) {
+      try {
+        const resp = await (window as any).solana.connect();
+        const gotPk = resp?.publicKey?.toString?.() ?? "";
+        if (!gotPk) {
+          toast.error("Phantom connect returned no public key");
+          return;
+        }
+
+        // persist to localStorage and notify same-tab listeners
+        try {
+          localStorage.setItem("validatorPublicKey", gotPk);
+          // Custom event so same-tab listeners can react immediately
+          window.dispatchEvent(new CustomEvent("validatorPublicKeyChanged", { detail: gotPk }));
+        } catch (e) {
+          console.warn("Could not write validatorPublicKey to localStorage:", e);
+        }
+
+        // callback & context update
+        try { onValidatorConnect?.(gotPk); } catch (err) { console.debug("onValidatorConnect callback error:", err); }
+        if (typeof setValidatorInContext === "function") {
+          try { setValidatorInContext(gotPk); } catch (err) { console.debug("setValidatorInContext error:", err); }
+        }
+
+        toast.success("Wallet connected successfully");
+        return;
+      } catch (err) {
+        console.debug("Phantom connect failed:", err);
+        toast.error("Phantom connect failed: " + String(err));
+      }
+    }
+
+    // Manual paste fallback (still requires sign-in)
+    const manualPk = prompt("Paste your Solana public key to connect as validator:");
+    if (manualPk && manualPk.trim()) {
+      const pk = manualPk.trim();
+      try {
+        localStorage.setItem("validatorPublicKey", pk);
+        window.dispatchEvent(new CustomEvent("validatorPublicKeyChanged", { detail: pk }));
+      } catch (e) {
+        console.warn("Could not write validatorPublicKey to localStorage:", e);
+      }
+
+      try { onValidatorConnect?.(pk); } catch (err) { console.debug("onValidatorConnect cb error:", err); }
+      if (typeof setValidatorInContext === "function") {
+        try { setValidatorInContext(pk); } catch (err) { console.debug("setValidatorInContext error:", err); }
+      }
+
+      toast.success("Validator key set successfully");
+    } else {
+      toast("Connect cancelled");
+    }
+  } catch (err) {
+    console.error("handleConnect error:", err);
+    toast.error("Connect error");
+  }
+};
+
+const handleDisconnect = async () => {
+  try {
+    // Remove local storage + notify same-tab listeners
+    try {
+      localStorage.removeItem("validatorPublicKey");
+      window.dispatchEvent(new CustomEvent("validatorPublicKeyChanged", { detail: null }));
+    } catch (e) {
+      console.warn("Could not remove validatorPublicKey from localStorage:", e);
+    }
+
+    // Try to disconnect Phantom (best-effort)
+    try {
+      if ((window as any).solana?.disconnect) await (window as any).solana.disconnect();
+    } catch (err) {
+      console.warn("Phantom disconnect failed (non-fatal):", err);
+    }
+
+    // Clear context & notify parent callback
+    if (typeof setValidatorInContext === "function") {
+      try { setValidatorInContext(null); } catch (err) { console.debug("setValidatorInContext(null) failed:", err); }
+    }
+    try { onValidatorDisconnect?.(); } catch (err) { console.debug("onValidatorDisconnect cb error:", err); }
+
+    toast.success("Wallet disconnected successfully");
+  } catch (err) {
+    console.error("Disconnect failed:", err);
+    toast.error("Failed to disconnect");
+  }
+};
+
 
   return (
     <nav className={`fixed top-0 left-0 right-0 z-50 transition-all duration-300 ${isDark 
@@ -807,50 +860,181 @@ export default function Validator(): JSX.Element {
     ws.onerror = (e) => { console.error("[Validator] WS error event:", e); };
   }
 
-  function stopMonitoring(reasonMsg?: string) {
-    try {
-      userRequestedDisconnectRef.current = true;
-      subscriptionRejectedRef.current = false;
-      if (reconnectTimerRef.current) {
-        window.clearTimeout(reconnectTimerRef.current);
-        reconnectTimerRef.current = null;
-      }
-      try { wsRef.current?.close(); } catch {}
-      wsRef.current = null;
-      if (pingTimerRef.current) { window.clearInterval(pingTimerRef.current); pingTimerRef.current = null; }
-      setMonitoring(false);
-      backoffRef.current = 1000;
-      if (reasonMsg) toast.info(reasonMsg);
-      else toast.success("Monitoring stopped successfully");
-    } catch (err) {
-      console.error("stopMonitoring error:", err);
-    }
-  }
+  async function stopMonitoring(offlineEndpoint?: string, reasonMsg?: string): Promise<void> {
+  try {
+    // mark that user explicitly requested disconnect
+    userRequestedDisconnectRef.current = true;
+    subscriptionRejectedRef.current = false;
 
-  function startMonitoring() {
+    // clear reconnect timer
+    if (reconnectTimerRef.current) {
+      window.clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = null;
+    }
+
+    // close WS & clear refs
+    try { wsRef.current?.close(); } catch {}
+    wsRef.current = null;
+
+    // clear ping timer
+    if (pingTimerRef.current) {
+      window.clearInterval(pingTimerRef.current);
+      pingTimerRef.current = null;
+    }
+
+    // local UI state
+    setMonitoring(false);
+    backoffRef.current = 1000;
+
+    if (reasonMsg) toast.info(reasonMsg);
+    else toast.success("Monitoring stopped successfully");
+
+    // --- Now attempt to mark validator offline in backend (best-effort) ---
     const pk = publicKey || localStorage.getItem("validatorPublicKey") || "";
     if (!pk) {
-      if ((window as any).solana && (window as any).solana.isPhantom) {
-        (window as any).solana.connect?.().then((r: any) => {
-          const gotPk = r?.publicKey?.toString?.() ?? "";
-          setPublicKey(gotPk);
-          try { localStorage.setItem("validatorPublicKey", gotPk); } catch {}
-          userRequestedDisconnectRef.current = false;
-          subscriptionRejectedRef.current = false;
-          openWsAndRegister(gotPk);
-          void fetchValidatorsCount();
-        }).catch((err: any) => toast.error("Phantom connect failed: " + String(err)));
-        return;
-      } else {
-        toast.error("Please supply a public key or install Phantom");
-        return;
-      }
+      // nothing to mark offline
+      return;
     }
 
-    userRequestedDisconnectRef.current = false;
-    subscriptionRejectedRef.current = false;
-    openWsAndRegister(pk);
+    // typed wrapper so safeGetToken accepts () => Promise<string>
+    const makeSafeTokenGetter = () => {
+      if (!getToken) return null;
+      return async (): Promise<string> => {
+        const t = await getToken();
+        if (!t) throw new Error("no token available");
+        return t;
+      };
+    };
+    const safeTokenGetter = makeSafeTokenGetter();
+
+    // default offline endpoint (change this to whatever your backend expects)
+    const defaultOfflineUrl =
+      `${API_BASE_RAW}/api/v1/change-to-offline?publicKey=${encodeURIComponent(pk)}&online=false`;
+    const urlToCall = offlineEndpoint ?? defaultOfflineUrl;
+
+    // send POST to mark offline (best-effort)
+    try {
+      let axiosConfig = {};
+      if (safeTokenGetter) {
+        try {
+          const token = await safeGetToken(safeTokenGetter);
+          if (token) {
+            axiosConfig = { headers: { Authorization: `Bearer ${token}` } };
+          }
+        } catch (err) {
+          // token refresh failed; continue without auth
+          console.warn("safeGetToken failed while stopping monitoring:", err);
+        }
+      }
+
+      // send request (POST with empty body). If your backend expects a body, change accordingly.
+      await axios.post(urlToCall, {}, axiosConfig);
+      // optional toast on success
+      toast.success("Marked validator offline");
+    } catch (err: any) {
+      console.error("Failed to mark validator offline:", err);
+      // show non-blocking error so user still sees monitoring stopped
+      toast.error("Failed to mark validator offline: " + (err?.message ?? String(err)));
+    }
+  } catch (err) {
+    console.error("stopMonitoring error:", err);
   }
+}
+
+async function safeGetToken(getToken?: () => Promise<string>) {
+  try {
+    if (!getToken) return null;
+    return await getToken();
+  } catch {
+    return null;
+  }
+}
+
+async function startMonitoring() {
+  const pk = publicKey || localStorage.getItem("validatorPublicKey") || "";
+
+  // Create a typed wrapper so safeGetToken receives () => Promise<string>
+  const makeSafeTokenGetter = () => {
+    if (!getToken) return null;
+    return async (): Promise<string> => {
+      const t = await getToken(); // getToken has type GetToken -> Promise<string | null>
+      if (!t) throw new Error("no token available");
+      return t;
+    };
+  };
+
+  const safeTokenGetter = makeSafeTokenGetter();
+
+  // helper to mark validator online in DB
+  const markOnline = async (validatorPk: string) => {
+    try {
+      // attempt to get Authorization header using safeGetToken if available
+      let axiosConfig = {};
+      if (safeTokenGetter) {
+        try {
+          const token = await safeGetToken(safeTokenGetter); // now has correct type
+          if (token) {
+            axiosConfig = { headers: { Authorization: `Bearer ${token}` } };
+          }
+        } catch (err) {
+          // safeGetToken may throw if token can't be refreshed; continue without auth
+          console.warn("safeGetToken failed, proceeding without auth:", err);
+        }
+      }
+
+      await axios.post(
+        `${API_BASE_RAW}/api/v1/change-to-online?publicKey=${encodeURIComponent(validatorPk)}`,
+        {},
+        axiosConfig
+      );
+      toast.success("Marked validator online");
+    } catch (err: any) {
+      console.error("Failed to mark validator online:", err);
+      toast.error("Failed to mark validator online: " + (err?.message ?? String(err)));
+    }
+  };
+
+  if (!pk) {
+    if ((window as any).solana && (window as any).solana.isPhantom) {
+      try {
+        const r: any = await (window as any).solana.connect?.();
+        const gotPk = r?.publicKey?.toString?.() ?? "";
+        if (!gotPk) {
+          toast.error("Phantom returned no public key");
+          return;
+        }
+
+        setPublicKey(gotPk);
+        try { localStorage.setItem("validatorPublicKey", gotPk); } catch {}
+
+        userRequestedDisconnectRef.current = false;
+        subscriptionRejectedRef.current = false;
+
+        // mark online in DB (best-effort)
+        await markOnline(gotPk);
+
+        openWsAndRegister(gotPk);
+        void fetchValidatorsCount();
+      } catch (err: any) {
+        console.error("Phantom connect failed:", err);
+        toast.error("Phantom connect failed: " + String(err));
+      }
+      return;
+    } else {
+      toast.error("Please supply a public key or install Phantom");
+      return;
+    }
+  }
+
+  // we already have a pk
+  userRequestedDisconnectRef.current = false;
+  subscriptionRejectedRef.current = false;
+
+  await markOnline(pk);
+  openWsAndRegister(pk);
+}
+
+
 
   useEffect(() => {
     function checkLocalPublicKeyAndReact(trigger?: string) {

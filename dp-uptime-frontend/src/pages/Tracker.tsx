@@ -3,7 +3,7 @@ import React, { useState, useMemo, useRef, useEffect } from 'react';
 import { ChevronDown, ChevronUp, Globe, Plus, Moon, Sun, Trash2, Activity, Network } from 'lucide-react';
 import { useWebsites } from '../hooks/useWebsites';
 import axios from 'axios';
-import { SignedIn, SignedOut, SignInButton, SignUpButton, useAuth, UserButton } from '@clerk/clerk-react';
+import { SignedIn, SignedOut, SignInButton, SignUpButton, useAuth, UserButton, useUser } from '@clerk/clerk-react';
 import toast, { Toaster } from 'react-hot-toast';
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts';
 import { Connection, PublicKey, SystemProgram, Transaction, clusterApiUrl, LAMPORTS_PER_SOL } from '@solana/web3.js';
@@ -448,12 +448,54 @@ function Navbar({
     }
   })();
 
+  // safe useUser access (Clerk)
+  const userHook = (() => {
+    try {
+      // ensure useUser is imported from @clerk/clerk-react in the file where you place this Navbar
+      return (useUser as any)();
+    } catch {
+      return undefined as any;
+    }
+  })();
+  const isSignedIn = !!userHook?.isSignedIn;
+
+  // handlers that enforce sign-in
+  const handleConnectClick = async () => {
+    if (!isSignedIn) {
+      toast.error("Please sign in first.");
+      return;
+    }
+    if (!connectWallet) {
+      toast.error("Connect handler not available.");
+      return;
+    }
+    try {
+      await connectWallet();
+    } catch (err) {
+      console.error("connectWallet failed:", err);
+      toast.error("Failed to connect wallet.");
+    }
+  };
+
+  const handleDisconnectClick = async () => {
+    if (!disconnectWallet) {
+      toast.error("Disconnect handler not available.");
+      return;
+    }
+    try {
+      await disconnectWallet();
+    } catch (err) {
+      console.error("disconnectWallet failed:", err);
+      toast.error("Failed to disconnect wallet.");
+    }
+  };
+
   const handleDisconnectValidator = async () => {
     try {
       try { localStorage.removeItem("validatorPublicKey"); } catch {}
       try {
-        if (window.solana && typeof window.solana.disconnect === 'function') {
-          await window.solana.disconnect();
+        if (typeof window !== "undefined" && (window as any).solana && typeof (window as any).solana.disconnect === 'function') {
+          await (window as any).solana.disconnect();
         }
       } catch (err) {
         console.warn("Phantom disconnect failed:", err);
@@ -467,6 +509,9 @@ function Navbar({
       toast.error("Failed to disconnect");
     }
   };
+
+  // runtime detection for Phantom (safe)
+  const hasPhantom = typeof window !== "undefined" && !!((window as any).solana && (window as any).solana.isPhantom);
 
   return (
     <nav
@@ -523,23 +568,25 @@ function Navbar({
             {/* Wallet connect UI */}
             <div className="flex items-center gap-3">
               <div className="hidden sm:flex items-center space-x-2">
-                { (window as any).solana && (window as any).solana.isPhantom ? (
+                { hasPhantom ? (
                   walletPublicKey ? (
                     <>
                       <div className="text-sm px-3 py-1 rounded-full bg-slate-800/30 text-slate-200">
                         {walletPublicKey.slice(0,4)}...{walletPublicKey.slice(-4)}
                       </div>
                       <button
-                        onClick={() => disconnectWallet && disconnectWallet()}
+                        onClick={handleDisconnectClick}
                         className="px-3 py-1 rounded-md text-sm font-medium bg-white text-slate-700 border"
+                        type="button"
                       >
                         Disconnect
                       </button>
                     </>
                   ) : (
                     <button
-                      onClick={() => connectWallet && connectWallet()}
+                      onClick={handleConnectClick}
                       className="px-3 py-1 rounded-md text-sm font-medium bg-blue-600 text-white"
+                      type="button"
                     >
                       Connect Wallet
                     </button>
@@ -548,6 +595,7 @@ function Navbar({
                   <button
                     onClick={() => window.open('https://phantom.app/', '_blank')}
                     className="px-3 py-1 rounded-md text-sm font-medium bg-slate-100 text-slate-700"
+                    type="button"
                   >
                     Install Phantom
                   </button>
@@ -575,6 +623,7 @@ function Navbar({
     </nav>
   );
 }
+
 
 // ----------------- Main App page -----------------
 export default function App(): JSX.Element {
