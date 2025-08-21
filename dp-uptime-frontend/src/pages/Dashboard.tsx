@@ -90,6 +90,7 @@ function Navbar({
   const ticking = useRef(false);
   const prevY = useRef(0);
 
+  // safe guarded hooks: still called in same order on every render
   const validatorCtx = (() => {
     try {
       return useValidator();
@@ -423,12 +424,17 @@ export default function Dashboard(): JSX.Element {
   const [newsletterEmail, setNewsletterEmail] = useState("");
   const [submittingNewsletter, setSubmittingNewsletter] = useState(false);
 
-  // Web3 background music
+  // Web3 background music (robust approach: HTMLAudio first, then WebAudio connect)
   const MUSIC_URL = "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3";
-  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const audioElemRef = useRef<HTMLAudioElement | null>(null);
+  const audioCtxRef = useRef<AudioContext | null>(null);
+  const mediaSourceRef = useRef<MediaElementAudioSourceNode | null>(null);
+  const gainRef = useRef<GainNode | null>(null);
+
   const [isPlaying, setIsPlaying] = useState(false);
   const [isMuted, setIsMuted] = useState(false);
   const [volume, setVolume] = useState(0.5);
+  const audioToastLockRef = useRef(false);
 
   // reveal-on-scroll
   useEffect(() => {
@@ -446,7 +452,6 @@ export default function Dashboard(): JSX.Element {
       { root: null, threshold: 0.12 }
     );
     sections.forEach((s) => obs.observe(s));
-    // enable smooth scrolling for the site (subtle global effect)
     try {
       document.documentElement.style.scrollBehavior = "smooth";
     } catch {}
@@ -467,7 +472,7 @@ export default function Dashboard(): JSX.Element {
     return () => clearInterval(id);
   }, []);
 
-  // fetch helpers
+  // fetch helpers (unchanged)
   async function fetchWebsitesOnce(signal?: AbortSignal) {
     setFetchingWebsites(true);
     try {
@@ -667,57 +672,345 @@ export default function Dashboard(): JSX.Element {
     return () => clearInterval(id);
   }, []);
 
-  // Enhanced audio controls
-  const toggleAudio = async () => {
+  // --- AUDIO: prefer HTMLAudioElement playback started from user gesture
+const ensureAudioElem = (): HTMLAudioElement => {
+  if (audioElemRef.current) return audioElemRef.current;
+
+  const a = document.createElement("audio");
+  a.loop = true;
+  a.preload = "auto";
+  a.style.display = "none";
+
+  // Try to set crossorigin first (needed to use WebAudio graph on cross-origin media)
+  try {
+    a.crossOrigin = "anonymous";
+    a.dataset.cross = "anonymous";
+  } catch (e) {
+    console.warn("Couldn't set crossOrigin on audio element:", e);
+  }
+
+  // Append before setting src to ensure event handlers are ready when loading begins
+  document.body.appendChild(a);
+  audioElemRef.current = a;
+
+  // helper to set src + load
+  const loadSrc = (src: string, withCross = true) => {
     try {
-      if (!audioRef.current) {
-        audioRef.current = new Audio(MUSIC_URL);
-        audioRef.current.loop = true;
-        audioRef.current.crossOrigin = "anonymous";
-        audioRef.current.volume = volume;
-      }
-      if (isPlaying) {
-        await audioRef.current.pause();
-        setIsPlaying(false);
+      if (withCross) {
+        try {
+          a.crossOrigin = "anonymous";
+          a.dataset.cross = "anonymous";
+        } catch {}
       } else {
         try {
-          await audioRef.current.play();
-          setIsPlaying(true);
-        } catch (err) {
-          console.warn("audio play blocked", err);
-          toast.error("Audio couldn't play — click allowed by browser policy.");
-          setIsPlaying(false);
-        }
+          a.removeAttribute("crossorigin");
+          a.dataset.cross = "nocors";
+        } catch {}
       }
-    } catch (err) {
-      console.error("toggleAudio failed", err);
+      // Only change src if different to avoid repeated reloads
+      if (a.src !== src) a.src = src;
+      // attempt to load
+      try { a.load(); } catch (e) { console.warn("audio.load() threw:", e); }
+    } catch (e) {
+      console.warn("loadSrc error:", e);
     }
   };
 
-  const toggleMute = () => {
-    if (audioRef.current) {
-      audioRef.current.muted = !isMuted;
-      setIsMuted(!isMuted);
+  // set initial source (try with crossorigin first)
+  loadSrc(MUSIC_URL, true);
+
+  // event handlers to keep state and debugging info
+  a.addEventListener("play", () => setIsPlaying(true));
+  a.addEventListener("pause", () => setIsPlaying(false));
+
+  a.addEventListener("canplay", () => {
+    console.debug("Audio canplay — ready to play. currentSrc:", a.currentSrc, "crossOrigin:", a.getAttribute("crossorigin"));
+  });
+
+  a.addEventListener("loadedmetadata", () => {
+    console.debug("Audio loadedmetadata:", { duration: a.duration, src: a.currentSrc, crossOrigin: a.getAttribute("crossorigin") });
+  });
+
+  a.addEventListener("stalled", () => {
+    console.warn("Audio stalled while fetching data. Check network/CORS for:", a.currentSrc);
+  });
+
+  // Error event: log, show toast, and try a fallback without crossorigin (only once)
+  a.addEventListener("error", (ev) => {
+    console.error("HTMLAudio element error", ev, audioElemRef.current?.error, {
+      src: a.currentSrc,
+      crossOrigin: a.getAttribute("crossorigin"),
+      dataset: { ...a.dataset },
+    });
+
+    // If a CORS-related failure happened while crossorigin was set, retry once without crossorigin.
+    const alreadyRetried = a.getAttribute("data-retried-nocors") === "1";
+    const hadCross = a.getAttribute("crossorigin") !== null;
+
+    // Many CORS problems manifest as an error here but audio.play() may still succeed - retry without crossorigin to ensure WebAudio compatibility.
+    if (!alreadyRetried && hadCross) {
+      console.warn("Retrying audio load without 'crossorigin' attribute (attempt to fix CORS-related WebAudio errors).");
+      try {
+        a.setAttribute("data-retried-nocors", "1");
+        a.removeAttribute("crossorigin");
+      } catch (e) {
+        console.warn("Failed to remove crossorigin attribute:", e);
+      }
+      // reload without crossorigin
+      loadSrc(MUSIC_URL, false);
+    }
+    console.log("audioToastLockRef is .............",audioToastLockRef);
+
+    if (!audioToastLockRef.current) {
+      audioToastLockRef.current = true;
+      toast.error("Audio element error. Check console/network/CORS.");
+    }
+  });
+
+  // network troubleshooting helper (fires on fetch events)
+  a.addEventListener("waiting", () => {
+    console.debug("Audio waiting for more data; network might be slow or blocked. src:", a.currentSrc);
+  });
+
+  return a;
+};
+
+
+  const createAudioContextIfNeeded = async () => {
+    if (!audioCtxRef.current) {
+      const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
+      audioCtxRef.current = ctx;
+    }
+    if (!gainRef.current && audioCtxRef.current) {
+      const gain = audioCtxRef.current.createGain();
+      gain.gain.value = isMuted ? 0 : volume;
+      gain.connect(audioCtxRef.current.destination);
+      gainRef.current = gain;
+    }
+    return audioCtxRef.current;
+  };
+
+  const connectMediaElementToAudioCtx = async (audioEl: HTMLAudioElement) => {
+  try {
+    if (!audioCtxRef.current) await createAudioContextIfNeeded();
+    if (!audioCtxRef.current) return;
+
+    // already wired
+    if (mediaSourceRef.current) return;
+
+    // If the audio is cross-origin (different origin from the page),
+    // creating a MediaElementSource will taint the audio graph and produce zeroes.
+    // Detect that and skip createMediaElementSource in that case.
+    try {
+      const src = audioEl.currentSrc || audioEl.src;
+      if (src) {
+        const audioOrigin = new URL(src).origin;
+        const pageOrigin = window.location.origin;
+        if (audioOrigin !== pageOrigin) {
+          console.warn("Cross-origin audio detected; skipping createMediaElementSource to avoid CORS tainting.", { src });
+          // Ensure we still have a gain node connected to destination so the rest of the code
+          // can reference gainRef (though it won't control the audio element unless mediaSourceRef exists).
+          if (!gainRef.current && audioCtxRef.current) {
+            const g = audioCtxRef.current.createGain();
+            g.gain.value = isMuted ? 0 : volume;
+            g.connect(audioCtxRef.current.destination);
+            gainRef.current = g;
+          }
+          // Use HTMLAudio element's volume as fallback for volume control
+          audioEl.volume = isMuted ? 0 : volume;
+          audioEl.muted = isMuted;
+          return;
+        }
+      }
+    } catch (err) {
+      // If URL parsing fails, continue and attempt to create the source (will be caught below)
+      console.warn("Could not determine audio origin; attempting to create MediaElementSource:", err);
+    }
+
+    // Best-effort: try to create media element source; if it throws, fall back to element volume
+    try {
+      const srcNode = audioCtxRef.current.createMediaElementSource(audioEl);
+      mediaSourceRef.current = srcNode;
+
+      if (!gainRef.current) {
+        const g = audioCtxRef.current.createGain();
+        g.gain.value = isMuted ? 0 : volume;
+        g.connect(audioCtxRef.current.destination);
+        gainRef.current = g;
+      }
+
+      mediaSourceRef.current.connect(gainRef.current);
+    } catch (err) {
+      console.warn("createMediaElementSource failed — falling back to HTMLAudio volume control. Error:", err);
+      // fall back: ensure element volume matches app state
+      try {
+        audioEl.volume = isMuted ? 0 : volume;
+        audioEl.muted = isMuted;
+      } catch (e) {
+        console.warn("Failed to set audio element volume/muted fallback:", e);
+      }
+    }
+  } catch (err) {
+    console.warn("connectMediaElementToAudioCtx error (non-fatal):", err);
+  }
+};
+
+
+const handlePlayToggle = async () => {
+  try {
+    const audioEl = ensureAudioElem();
+
+    // If currently playing -> pause
+    if (!audioEl.paused && !audioEl.ended) {
+      audioEl.pause();
+      setIsPlaying(false);
+      return;
+    }
+
+    // Try to play immediately on the user click (do this before awaits)
+    let played = false;
+    try {
+      const playPromise = audioEl.play();
+      if (playPromise && typeof (playPromise as any).then === "function") {
+        await playPromise;
+      }
+      played = !audioEl.paused && !audioEl.ended;
+    } catch (err) {
+      console.warn("initial play() blocked or failed:", err);
+    }
+
+    // If normal play was blocked, try a muted-play fallback (user initiated click)
+    if (!played) {
+      try {
+        audioEl.muted = true;
+        await audioEl.play();
+        // small delay, then unmute (user already clicked)
+        setTimeout(() => {
+          try {
+            audioEl.muted = false;
+            audioEl.volume = isMuted ? 0 : volume;
+            if (gainRef.current) gainRef.current.gain.value = isMuted ? 0 : volume;
+          } catch (e) { console.warn("unmute fallback failed:", e); }
+        }, 250);
+      } catch (err2) {
+        console.error("muted fallback also failed:", err2);
+        throw err2;
+      }
+    }
+
+    // Create/resume AudioContext and connect (best-effort)
+    try {
+      await createAudioContextIfNeeded();
+      if (audioCtxRef.current && audioCtxRef.current.state === "suspended") {
+        try { await audioCtxRef.current.resume(); } catch (e) { console.warn("resume failed:", e); }
+      }
+      await connectMediaElementToAudioCtx(audioEl);
+      if (gainRef.current) gainRef.current.gain.value = isMuted ? 0 : volume;
+      audioEl.volume = isMuted ? 0 : volume;
+      audioEl.muted = isMuted;
+    } catch (e) {
+      console.warn("post-play audio context/connect failed (non-fatal):", e);
+    }
+
+    setIsPlaying(!audioEl.paused && !audioEl.ended);
+  } catch (e: any) {
+    console.error("handlePlayToggle error:", e);
+    const name = e?.name ?? "";
+    if (name === "NotAllowedError" || name === "NotSupportedError") {
+      toast.error("Browser blocked playback. Try clicking the play button again or disable Brave Shields.");
+    } else {
+      toast.error("Audio couldn't start — check console for details.");
+    }
+  }
+};
+
+
+  const handleMuteToggle = async () => {
+    try {
+      const newMuted = !isMuted;
+      setIsMuted(newMuted);
+      const audioEl = audioElemRef.current;
+      if (gainRef.current) {
+        gainRef.current.gain.value = newMuted ? 0 : volume;
+      }
+      if (audioEl) {
+        try {
+          audioEl.muted = newMuted;
+          audioEl.volume = newMuted ? 0 : volume;
+          // If unmuting and audio isn't playing, attempt to play (user gesture required — but unmute clicked by user)
+          if (!newMuted && (audioEl.paused || audioEl.ended)) {
+            try {
+              await audioEl.play();
+              setIsPlaying(true);
+            } catch (err) {
+              // If this fails, ask user to explicitly press play
+              console.warn("unmute attempted play failed:", err);
+              toast("Audio unmuted — press play to start.", { duration: 3500 });
+            }
+          }
+        } catch (err) {
+          console.warn("failed to update audioEl mute/volume:", err);
+        }
+      }
+    } catch (err) {
+      console.error("handleMuteToggle failed:", err);
     }
   };
 
   const handleVolumeChange = (newVolume: number) => {
     setVolume(newVolume);
-    if (audioRef.current) {
-      audioRef.current.volume = newVolume;
+    try {
+      if (gainRef.current) gainRef.current.gain.value = isMuted ? 0 : newVolume;
+      if (audioElemRef.current) audioElemRef.current.volume = newVolume;
+    } catch (err) {
+      console.warn("handleVolumeChange warn:", err);
+    }
+  };
+
+  // Pause & cleanup helper
+  const stopPlayback = () => {
+    try {
+      if (audioElemRef.current && !audioElemRef.current.paused) {
+        audioElemRef.current.pause();
+      }
+      setIsPlaying(false);
+    } catch (err) {
+      console.warn("stopPlayback failed:", err);
     }
   };
 
   useEffect(() => {
     return () => {
       try {
-        if (audioRef.current) {
-          audioRef.current.pause();
-          audioRef.current.src = "";
-          audioRef.current = null;
+        stopPlayback();
+        if (mediaSourceRef.current) {
+          try {
+            mediaSourceRef.current.disconnect();
+          } catch {}
+          mediaSourceRef.current = null;
+        }
+        if (gainRef.current) {
+          try {
+            gainRef.current.disconnect();
+          } catch {}
+          gainRef.current = null;
+        }
+        if (audioCtxRef.current) {
+          try {
+            audioCtxRef.current.close();
+          } catch {}
+          audioCtxRef.current = null;
+        }
+        if (audioElemRef.current) {
+          try {
+            audioElemRef.current.pause();
+            if (audioElemRef.current.parentElement) audioElemRef.current.parentElement.removeChild(audioElemRef.current);
+          } catch {}
+          audioElemRef.current = null;
         }
       } catch {}
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // newsletter demo
@@ -744,120 +1037,36 @@ export default function Dashboard(): JSX.Element {
     style.id = "dashboard-glass-styles";
     style.textContent = `
       /* reveal */
-      [data-reveal] {
-        opacity: 0;
-        transform: translateY(30px);
-        transition: all 0.8s cubic-bezier(0.4, 0, 0.2, 1);
-      }
-      [data-reveal].reveal {
-        opacity: 1;
-        transform: translateY(0);
-      }
+      [data-reveal] { opacity: 0; transform: translateY(30px); transition: all 0.8s cubic-bezier(0.4,0,0.2,1); }
+      [data-reveal].reveal { opacity: 1; transform: translateY(0); }
 
-      /* general glass surface */
-      .glassmorphism {
-        backdrop-filter: blur(12px) saturate(120%);
-        -webkit-backdrop-filter: blur(12px) saturate(120%);
-        transition: background 220ms ease, transform 220ms ease, box-shadow 220ms ease;
-        border-radius: 12px;
-      }
+      .glassmorphism { backdrop-filter: blur(12px) saturate(120%); -webkit-backdrop-filter: blur(12px) saturate(120%); transition: background 220ms ease, transform 220ms ease, box-shadow 220ms ease; border-radius: 12px; }
 
-      /* floating animation */
-      .animate-float {
-        animation: float 6s ease-in-out infinite;
-      }
-      @keyframes float {
-        0%, 100% { transform: translateY(0px); }
-        50% { transform: translateY(-14px); }
-      }
+      .animate-float { animation: float 6s ease-in-out infinite; }
+      @keyframes float { 0%,100% { transform: translateY(0px); } 50% { transform: translateY(-14px); } }
 
-      /* Gradient border wrapper (outer) */
-      .gradient-border {
-        background: linear-gradient(135deg, rgba(59,130,246,0.15), rgba(139,92,246,0.12) 45%, rgba(6,182,212,0.12) 100%);
-        padding: 2px;
-        border-radius: 1rem;
-      }
+      .gradient-border { background: linear-gradient(135deg, rgba(59,130,246,0.15), rgba(139,92,246,0.12) 45%, rgba(6,182,212,0.12) 100%); padding: 2px; border-radius: 1rem; }
       .gradient-border > div { border-radius: calc(1rem - 2px); }
 
-      /* --- NEW: metrics glass surface (bluish, blurred, light & dark variations) --- */
-      /* default (light) */
-      .gradient-border > .glassmorphism {
-        background: linear-gradient(180deg, rgba(255,255,255,0.78), rgba(245,249,255,0.60));
-        border: 1px solid rgba(15,23,42,0.04);
-        box-shadow: 0 10px 30px rgba(10,14,25,0.06);
-        color: #0b1220;
-        padding: 1.75rem;
-        min-height: 200px;
-        backdrop-filter: blur(18px) saturate(140%);
-        -webkit-backdrop-filter: blur(18px) saturate(140%);
-      }
+      .gradient-border > .glassmorphism { background: linear-gradient(180deg, rgba(255,255,255,0.78), rgba(245,249,255,0.60)); border: 1px solid rgba(15,23,42,0.04); box-shadow: 0 10px 30px rgba(10,14,25,0.06); color: #0b1220; padding: 1.75rem; min-height: 200px; backdrop-filter: blur(18px) saturate(140%); -webkit-backdrop-filter: blur(18px) saturate(140%); }
 
-      /* dark mode override when using html.dark or prefers-color-scheme: dark */
       @media (prefers-color-scheme: dark) {
-        .gradient-border {
-          background: linear-gradient(135deg, rgba(14,36,77,0.18), rgba(26,10,58,0.14) 45%, rgba(9,10,24,0.12) 100%);
-        }
-        .gradient-border > .glassmorphism {
-          background: linear-gradient(180deg, rgba(6,10,18,0.50), rgba(12,18,34,0.42));
-          border: 1px solid rgba(255,255,255,0.04);
-          box-shadow: 0 12px 40px rgba(2,6,23,0.55);
-          color: #e6eef9;
-        }
-      }
-      /* explicit dark class override (if your app adds .dark to <html> or <body>) */
-      html.dark .gradient-border > .glassmorphism,
-      body.dark .gradient-border > .glassmorphism {
-        background: linear-gradient(180deg, rgba(6,10,18,0.50), rgba(12,18,34,0.42));
-        border: 1px solid rgba(255,255,255,0.04);
-        box-shadow: 0 12px 40px rgba(2,6,23,0.55);
-        color: #e6eef9;
+        .gradient-border { background: linear-gradient(135deg, rgba(14,36,77,0.18), rgba(26,10,58,0.14) 45%, rgba(9,10,24,0.12) 100%); }
+        .gradient-border > .glassmorphism { background: linear-gradient(180deg, rgba(6,10,18,0.50), rgba(12,18,34,0.42)); border: 1px solid rgba(255,255,255,0.04); box-shadow: 0 12px 40px rgba(2,6,23,0.55); color: #e6eef9; }
       }
 
-      /* subtle inner accent line under headings in cards */
-      .gradient-border > .glassmorphism h3 {
-        position: relative;
-      }
-      .gradient-border > .glassmorphism h3::after {
-        content: "";
-        position: absolute;
-        left: 0;
-        bottom: -12px;
-        width: 56px;
-        height: 4px;
-        border-radius: 8px;
-        background: linear-gradient(90deg, rgba(139,92,246,0.9), rgba(59,130,246,0.9));
-        opacity: 0.14;
-      }
+      html.dark .gradient-border > .glassmorphism, body.dark .gradient-border > .glassmorphism { background: linear-gradient(180deg, rgba(6,10,18,0.50), rgba(12,18,34,0.42)); border: 1px solid rgba(255,255,255,0.04); box-shadow: 0 12px 40px rgba(2,6,23,0.55); color: #e6eef9; }
 
-      /* list-card hover inside gradient card */
-      .gradient-border .list-card {
-        background: linear-gradient(90deg, rgba(255,255,255,0.02), rgba(255,255,255,0.00));
-        border-radius: 10px;
-        padding: 0.6rem;
-        transition: transform .18s ease, background .18s ease, box-shadow .18s ease;
-      }
-      .gradient-border .list-card:hover {
-        transform: translateY(-4px);
-        box-shadow: 0 8px 20px rgba(2,6,23,0.06);
-      }
+      .gradient-border > .glassmorphism h3 { position: relative; }
+      .gradient-border > .glassmorphism h3::after { content: ""; position: absolute; left: 0; bottom: -12px; width: 56px; height: 4px; border-radius: 8px; background: linear-gradient(90deg, rgba(139,92,246,0.9), rgba(59,130,246,0.9)); opacity: 0.14; }
 
-      /* scrollbar style for validators list */
-      .gradient-border ::-webkit-scrollbar {
-        width: 8px;
-      }
-      .gradient-border ::-webkit-scrollbar-track {
-        background: transparent;
-      }
-      .gradient-border ::-webkit-scrollbar-thumb {
-        background: linear-gradient(180deg, rgba(99,102,241,0.28), rgba(56,189,248,0.22));
-        border-radius: 999px;
-      }
+      .gradient-border .list-card { background: linear-gradient(90deg, rgba(255,255,255,0.02), rgba(255,255,255,0.00)); border-radius: 10px; padding: 0.6rem; transition: transform .18s ease, background .18s ease, box-shadow .18s ease; }
+      .gradient-border .list-card:hover { transform: translateY(-4px); box-shadow: 0 8px 20px rgba(2,6,23,0.06); }
+      .gradient-border ::-webkit-scrollbar { width: 8px; }
+      .gradient-border ::-webkit-scrollbar-track { background: transparent; }
+      .gradient-border ::-webkit-scrollbar-thumb { background: linear-gradient(180deg, rgba(99,102,241,0.28), rgba(56,189,248,0.22)); border-radius: 999px; }
 
-      /* reduced motion */
-      @media (prefers-reduced-motion: reduce) {
-        .animate-float { animation: none !important; transform: none !important; }
-        [data-reveal] { transition: none !important; }
-      }
+      @media (prefers-reduced-motion: reduce) { .animate-float { animation: none !important; transform: none !important; } [data-reveal] { transition: none !important; } }
     `;
     document.head.appendChild(style);
     return () => {
@@ -887,14 +1096,16 @@ export default function Dashboard(): JSX.Element {
       <div className={`fixed bottom-6 left-6 z-40 glassmorphism rounded-2xl p-4 ${isDark ? "bg-slate-800/20 border border-white/10" : "bg-white/20 border border-gray-200/20"} shadow-2xl`}>
         <div className="flex items-center gap-3">
           <button 
-            onClick={toggleAudio} 
+            onClick={handlePlayToggle} 
             className={`p-3 rounded-xl transition-all duration-300 hover:scale-110 ${isPlaying ? "bg-gradient-to-r from-purple-500 to-pink-500 text-white" : isDark ? "bg-slate-700/50 text-slate-300" : "bg-white/50 text-gray-700"}`}
+            aria-label={isPlaying ? "Pause music" : "Play music"}
+            title={isPlaying ? "Pause" : "Play"}
           >
             {isPlaying ? <Pause className="w-5 h-5" /> : <Play className="w-5 h-5" />}
           </button>
           
           <div className="flex items-center gap-2">
-            <button onClick={toggleMute} className={`p-2 rounded-lg ${isDark ? "text-slate-300 hover:text-white" : "text-gray-600 hover:text-gray-800"}`}>
+            <button onClick={handleMuteToggle} className={`p-2 rounded-lg ${isDark ? "text-slate-300 hover:text-white" : "text-gray-600 hover:text-gray-800"}`} aria-label="Toggle mute">
               {isMuted ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
             </button>
             <input
@@ -1166,45 +1377,13 @@ export default function Dashboard(): JSX.Element {
 
             <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
               {[
-                { 
-                  id: 1, 
-                  name: "Ava Chen", 
-                  role: "DeFi Protocol Lead",
-                  rating: 5, 
-                  text: "DecentWatch's validator network provides unmatched reliability for our critical infrastructure monitoring. The blockchain attestation gives us complete confidence in our uptime metrics.", 
-                  when: "2 days ago",
-                  avatar: "AC",
-                  company: "Phantom Labs"
-                },
-                { 
-                  id: 2, 
-                  name: "Liam Rodriguez", 
-                  role: "DevOps Engineer", 
-                  rating: 5, 
-                  text: "Setting up as a validator was seamless. The rewards are consistent and the dashboard provides excellent insights into network performance. Highly recommended!", 
-                  when: "1 week ago",
-                  avatar: "LR",
-                  company: "Solana Foundation"
-                },
-                { 
-                  id: 3, 
-                  name: "Noah Kim", 
-                  role: "CTO",
-                  rating: 4, 
-                  text: "Excellent uptime monitoring with detailed alerting. The decentralized approach gives us redundancy that traditional monitoring can't match.", 
-                  when: "3 weeks ago",
-                  avatar: "NK",
-                  company: "Web3 Startup"
-                },
+                { id: 1, name: "Ava Chen", role: "DeFi Protocol Lead", rating: 5, text: "DecentWatch's validator network provides unmatched reliability for our critical infrastructure monitoring. The blockchain attestation gives us complete confidence in our uptime metrics.", when: "2 days ago", avatar: "AC", company: "Phantom Labs" },
+                { id: 2, name: "Liam Rodriguez", role: "DevOps Engineer", rating: 5, text: "Setting up as a validator was seamless. The rewards are consistent and the dashboard provides excellent insights into network performance. Highly recommended!", when: "1 week ago", avatar: "LR", company: "Solana Foundation" },
+                { id: 3, name: "Noah Kim", role: "CTO", rating: 4, text: "Excellent uptime monitoring with detailed alerting. The decentralized approach gives us redundancy that traditional monitoring can't match.", when: "3 weeks ago", avatar: "NK", company: "Web3 Startup" },
               ].map((r) => (
-                <div 
-                  key={r.id} 
-                  className={`rounded-2xl p-8 glassmorphism transition-all duration-300 hover:scale-105 hover:shadow-2xl ${isDark ? "bg-slate-900/40 border border-white/10" : "bg-white/60 border border-gray-200/20"} shadow-xl`}
-                >
+                <div key={r.id} className={`rounded-2xl p-8 glassmorphism transition-all duration-300 hover:scale-105 hover:shadow-2xl ${isDark ? "bg-slate-900/40 border border-white/10" : "bg-white/60 border border-gray-200/20"} shadow-xl`}>
                   <div className="flex items-center gap-1 mb-4">
-                    {Array(r.rating).fill(0).map((_, i) => (
-                      <Star key={i} className="w-5 h-5 fill-yellow-400 text-yellow-400" />
-                    ))}
+                    {Array(r.rating).fill(0).map((_, i) => (<Star key={i} className="w-5 h-5 fill-yellow-400 text-yellow-400" />))}
                   </div>
                   
                   <blockquote className={`text-lg mb-6 ${isDark ? "text-gray-200" : "text-gray-700"} leading-relaxed`}>
@@ -1235,15 +1414,9 @@ export default function Dashboard(): JSX.Element {
             <div className={`rounded-3xl p-12 md:p-16 glassmorphism ${isDark ? "bg-gradient-to-r from-purple-900/40 via-blue-900/40 to-indigo-900/40 border border-white/10" : "bg-gradient-to-r from-blue-50 to-indigo-100 border border-gray-200"} shadow-2xl`}>
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-12 items-center">
                 <div>
-                  <h3 className={`text-4xl md:text-5xl font-black mb-6 ${isDark ? "text-white" : "text-gray-900"}`}>
-                    Run a Validator.
-                    <span className="block bg-gradient-to-r from-purple-500 to-pink-500 bg-clip-text text-transparent">
-                      Earn Rewards.
-                    </span>
-                  </h3>
+                  <h3 className={`text-4xl md:text-5xl font-black mb-6 ${isDark ? "text-white" : "text-gray-900"}`}>Run a Validator.<span className="block bg-gradient-to-r from-purple-500 to-pink-500 bg-clip-text text-transparent">Earn Rewards.</span></h3>
                   <p className={`text-xl mb-8 ${isDark ? "text-gray-300" : "text-gray-600"} leading-relaxed`}>
-                    Join the DecentWatch validator network and earn SOL rewards while helping secure 
-                    the future of decentralized monitoring. No technical expertise required.
+                    Join the DecentWatch validator network and earn SOL rewards while helping secure the future of decentralized monitoring. No technical expertise required.
                   </p>
                   
                   <div className="flex items-center gap-6 mb-8">
@@ -1265,19 +1438,12 @@ export default function Dashboard(): JSX.Element {
                 <div className="text-center lg:text-right">
                   <div className="mb-8">
                     <div className={`text-6xl font-black mb-2 ${isDark ? "text-white" : "text-gray-900"}`}>
-                      {topValidators.length > 0 
-                        ? ((Number(topValidators[0]?._pendingNumeric ?? 0) || 0) / 1_000_000_000).toFixed(2)
-                        : "12.50"
-                      }
-                      <span className="text-purple-500">SOL</span>
+                      {topValidators.length > 0 ? ((Number(topValidators[0]?._pendingNumeric ?? 0) || 0) / 1_000_000_000).toFixed(2) : "12.50"}<span className="text-purple-500">SOL</span>
                     </div>
                     <div className="text-gray-400 text-lg">Average monthly earnings</div>
                   </div>
                   
-                  <button 
-                    onClick={() => window.location.assign("/become-validator")} 
-                    className="group px-8 py-4 rounded-2xl font-bold text-lg text-white bg-gradient-to-r from-purple-600 to-pink-600 shadow-2xl transition-all duration-300 hover:scale-105 hover:shadow-purple-500/25"
-                  >
+                  <button onClick={() => window.location.assign("/become-validator")} className="group px-8 py-4 rounded-2xl font-bold text-lg text-white bg-gradient-to-r from-purple-600 to-pink-600 shadow-2xl transition-all duration-300 hover:scale-105 hover:shadow-purple-500/25">
                     <span className="flex items-center gap-2">
                       Become a Validator
                       <ArrowRight className="w-5 h-5 transition-transform group-hover:translate-x-1" />
@@ -1294,25 +1460,12 @@ export default function Dashboard(): JSX.Element {
           <div className="max-w-7xl mx-auto">
             {/* Newsletter Section */}
             <div className="text-center mb-16">
-              <h3 className={`text-3xl font-black mb-4 ${isDark ? "text-white" : "text-gray-900"}`}>
-                Stay Updated
-              </h3>
-              <p className={`text-lg mb-8 ${isDark ? "text-gray-300" : "text-gray-600"}`}>
-                Get the latest updates on Web3 monitoring innovations and validator rewards
-              </p>
+              <h3 className={`text-3xl font-black mb-4 ${isDark ? "text-white" : "text-gray-900"}`}>Stay Updated</h3>
+              <p className={`text-lg mb-8 ${isDark ? "text-gray-300" : "text-gray-600"}`}>Get the latest updates on Web3 monitoring innovations and validator rewards</p>
               
               <form onSubmit={handleSubscribe} className="flex flex-col sm:flex-row gap-4 max-w-md mx-auto">
-                <input 
-                  value={newsletterEmail} 
-                  onChange={(e) => setNewsletterEmail(e.target.value)} 
-                  placeholder="Enter your email address" 
-                  className={`flex-1 px-6 py-4 rounded-xl border-2 ${isDark ? "bg-slate-800/50 border-white/10 text-white placeholder-gray-400" : "bg-white border-gray-200 text-gray-900 placeholder-gray-500"} focus:outline-none focus:border-purple-500 transition-all duration-300`}
-                />
-                <button 
-                  type="submit" 
-                  disabled={submittingNewsletter} 
-                  className="px-6 py-4 rounded-xl font-semibold bg-gradient-to-r from-purple-600 to-blue-600 text-white transition-all duration-300 hover:scale-105 disabled:opacity-50 shadow-lg"
-                >
+                <input value={newsletterEmail} onChange={(e) => setNewsletterEmail(e.target.value)} placeholder="Enter your email address" className={`flex-1 px-6 py-4 rounded-xl border-2 ${isDark ? "bg-slate-800/50 border-white/10 text-white placeholder-gray-400" : "bg-white border-gray-200 text-gray-900 placeholder-gray-500"} focus:outline-none focus:border-purple-500 transition-all duration-300`} />
+                <button type="submit" disabled={submittingNewsletter} className="px-6 py-4 rounded-xl font-semibold bg-gradient-to-r from-purple-600 to-blue-600 text-white transition-all duration-300 hover:scale-105 disabled:opacity-50 shadow-lg">
                   {submittingNewsletter ? "Subscribing..." : "Subscribe"}
                 </button>
               </form>
@@ -1329,20 +1482,11 @@ export default function Dashboard(): JSX.Element {
                     <div className="text-sm text-gray-400">Decentralized Monitoring</div>
                   </div>
                 </div>
-                <p className={`text-sm ${isDark ? "text-gray-300" : "text-gray-600"} mb-6 leading-relaxed`}>
-                  The future of Web3 infrastructure monitoring. Built by developers, for developers, 
-                  secured by a global validator network.
-                </p>
+                <p className={`text-sm ${isDark ? "text-gray-300" : "text-gray-600"} mb-6 leading-relaxed`}>The future of Web3 infrastructure monitoring. Built by developers, for developers, secured by a global validator network.</p>
                 <div className="flex gap-4">
-                  <button className={`p-3 rounded-xl ${isDark ? "bg-slate-800/50 text-white hover:bg-slate-700/50" : "bg-gray-100 text-gray-700 hover:bg-gray-200"} transition-all duration-300 hover:scale-110`}>
-                    <Github className="w-5 h-5" />
-                  </button>
-                  <button className={`p-3 rounded-xl ${isDark ? "bg-slate-800/50 text-white hover:bg-slate-700/50" : "bg-gray-100 text-gray-700 hover:bg-gray-200"} transition-all duration-300 hover:scale-110`}>
-                    <Twitter className="w-5 h-5" />
-                  </button>
-                  <button className={`p-3 rounded-xl ${isDark ? "bg-slate-800/50 text-white hover:bg-slate-700/50" : "bg-gray-100 text-gray-700 hover:bg-gray-200"} transition-all duration-300 hover:scale-110`}>
-                    <Send className="w-5 h-5" />
-                  </button>
+                  <button className={`p-3 rounded-xl ${isDark ? "bg-slate-800/50 text-white hover:bg-slate-700/50" : "bg-gray-100 text-gray-700 hover:bg-gray-200"} transition-all duration-300 hover:scale-110`}><Github className="w-5 h-5" /></button>
+                  <button className={`p-3 rounded-xl ${isDark ? "bg-slate-800/50 text-white hover:bg-slate-700/50" : "bg-gray-100 text-gray-700 hover:bg-gray-200"} transition-all duration-300 hover:scale-110`}><Twitter className="w-5 h-5" /></button>
+                  <button className={`p-3 rounded-xl ${isDark ? "bg-slate-800/50 text-white hover:bg-slate-700/50" : "bg-gray-100 text-gray-700 hover:bg-gray-200"} transition-all duration-300 hover:scale-110`}><Send className="w-5 h-5" /></button>
                 </div>
               </div>
 
@@ -1350,20 +1494,8 @@ export default function Dashboard(): JSX.Element {
               <div>
                 <h4 className={`text-lg font-bold mb-6 ${isDark ? "text-white" : "text-gray-900"}`}>Platform</h4>
                 <ul className="space-y-4">
-                  {[
-                    { name: "Website Tracker", href: "/tracker" },
-                    { name: "Validator Dashboard", href: "/validator" },
-                    { name: "Become a Validator", href: "/become-validator" },
-                    { name: "Network Status", href: "/status" },
-                  ].map(link => (
-                    <li key={link.name}>
-                      <button 
-                        onClick={() => window.location.assign(link.href)} 
-                        className={`text-sm ${isDark ? "text-gray-300 hover:text-white" : "text-gray-600 hover:text-gray-900"} transition-colors duration-300 hover:translate-x-1 transform`}
-                      >
-                        {link.name}
-                      </button>
-                    </li>
+                  {[ { name: "Website Tracker", href: "/tracker" }, { name: "Validator Dashboard", href: "/validator" }, { name: "Become a Validator", href: "/become-validator" }, { name: "Network Status", href: "/status" } ].map(link => (
+                    <li key={link.name}><button onClick={() => window.location.assign(link.href)} className={`text-sm ${isDark ? "text-gray-300 hover:text-white" : "text-gray-600 hover:text-gray-900"} transition-colors duration-300 hover:translate-x-1 transform`}>{link.name}</button></li>
                   ))}
                 </ul>
               </div>
@@ -1372,21 +1504,8 @@ export default function Dashboard(): JSX.Element {
               <div>
                 <h4 className={`text-lg font-bold mb-6 ${isDark ? "text-white" : "text-gray-900"}`}>Developers</h4>
                 <ul className="space-y-4">
-                  {[
-                    { name: "Documentation", href: "/docs", icon: BookOpen },
-                    { name: "API Reference", href: "/docs/api", icon: FileText },
-                    { name: "Validator Guide", href: "/docs/validators", icon: Server },
-                    { name: "SDKs & Tools", href: "/docs/sdks", icon: Zap },
-                  ].map(link => (
-                    <li key={link.name}>
-                      <button 
-                        onClick={() => window.location.assign(link.href)} 
-                        className={`flex items-center gap-2 text-sm ${isDark ? "text-gray-300 hover:text-white" : "text-gray-600 hover:text-gray-900"} transition-all duration-300 hover:translate-x-1 transform`}
-                      >
-                        <link.icon className="w-4 h-4" />
-                        {link.name}
-                      </button>
-                    </li>
+                  {[ { name: "Documentation", href: "/docs", icon: BookOpen }, { name: "API Reference", href: "/docs/api", icon: FileText }, { name: "Validator Guide", href: "/docs/validators", icon: Server }, { name: "SDKs & Tools", href: "/docs/sdks", icon: Zap } ].map(link => (
+                    <li key={link.name}><button onClick={() => window.location.assign(link.href)} className={`flex items-center gap-2 text-sm ${isDark ? "text-gray-300 hover:text-white" : "text-gray-600 hover:text-gray-900"} transition-all duration-300 hover:translate-x-1 transform`}><link.icon className="w-4 h-4" />{link.name}</button></li>
                   ))}
                 </ul>
               </div>
@@ -1397,25 +1516,12 @@ export default function Dashboard(): JSX.Element {
                 <div className="space-y-4">
                   <div className={`text-sm ${isDark ? "text-gray-300" : "text-gray-600"} mb-4`}>
                     <div className="font-medium mb-2">Contact Us</div>
-                    <a href="mailto:support@decentwatch.example" className="hover:underline">
-                      support@decentwatch.example
-                    </a>
+                    <a href="mailto:support@decentwatch.example" className="hover:underline">support@decentwatch.example</a>
                   </div>
                   
                   <div className="space-y-3">
-                    {[
-                      { name: "Help Center", href: "/help" },
-                      { name: "Community", href: "/community" },
-                      { name: "Status Page", href: "/status" },
-                      { name: "Bug Reports", href: "/bugs" },
-                    ].map(link => (
-                      <button 
-                        key={link.name}
-                        onClick={() => window.location.assign(link.href)} 
-                        className={`block text-sm ${isDark ? "text-gray-300 hover:text-white" : "text-gray-600 hover:text-gray-900"} transition-all duration-300 hover:translate-x-1 transform`}
-                      >
-                        {link.name}
-                      </button>
+                    {[ { name: "Help Center", href: "/help" }, { name: "Community", href: "/community" }, { name: "Status Page", href: "/status" }, { name: "Bug Reports", href: "/bugs" } ].map(link => (
+                      <button key={link.name} onClick={() => window.location.assign(link.href)} className={`block text-sm ${isDark ? "text-gray-300 hover:text-white" : "text-gray-600 hover:text-gray-900"} transition-all duration-300 hover:translate-x-1 transform`}>{link.name}</button>
                     ))}
                   </div>
                 </div>
@@ -1424,29 +1530,12 @@ export default function Dashboard(): JSX.Element {
 
             {/* Bottom Bar */}
             <div className={`pt-8 border-t ${isDark ? "border-white/10" : "border-gray-200/20"} flex flex-col md:flex-row items-center justify-between gap-6`}>
-              <div className={`text-sm ${isDark ? "text-gray-400" : "text-gray-500"}`}>
-                © {new Date().getFullYear()} DecentWatch. All rights reserved. Built for the decentralized web.
-              </div>
+              <div className={`text-sm ${isDark ? "text-gray-400" : "text-gray-500"}`}>© {new Date().getFullYear()} DecentWatch. All rights reserved. Built for the decentralized web.</div>
               
               <div className="flex items-center gap-6 text-sm">
-                <button 
-                  onClick={() => window.location.assign("/legal/terms")} 
-                  className={`${isDark ? "text-gray-400 hover:text-white" : "text-gray-500 hover:text-gray-900"} transition-colors duration-300`}
-                >
-                  Terms of Service
-                </button>
-                <button 
-                  onClick={() => window.location.assign("/legal/privacy")} 
-                  className={`${isDark ? "text-gray-400 hover:text-white" : "text-gray-500 hover:text-gray-900"} transition-colors duration-300`}
-                >
-                  Privacy Policy
-                </button>
-                <button 
-                  onClick={() => window.location.assign("/legal/cookies")} 
-                  className={`${isDark ? "text-gray-400 hover:text-white" : "text-gray-500 hover:text-gray-900"} transition-colors duration-300`}
-                >
-                  Cookie Policy
-                </button>
+                <button onClick={() => window.location.assign("/legal/terms")} className={`${isDark ? "text-gray-400 hover:text-white" : "text-gray-500 hover:text-gray-900"} transition-colors duration-300`}>Terms of Service</button>
+                <button onClick={() => window.location.assign("/legal/privacy")} className={`${isDark ? "text-gray-400 hover:text-white" : "text-gray-500 hover:text-gray-900"} transition-colors duration-300`}>Privacy Policy</button>
+                <button onClick={() => window.location.assign("/legal/cookies")} className={`${isDark ? "text-gray-400 hover:text-white" : "text-gray-500 hover:text-gray-900"} transition-colors duration-300`}>Cookie Policy</button>
               </div>
             </div>
           </div>
