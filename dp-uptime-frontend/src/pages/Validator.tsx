@@ -1,21 +1,8 @@
-// src/pages/Validator.tsx
 import React, { useEffect, useRef, useState } from "react";
-import {
-  Globe,
-  Moon,
-  Sun,
-  Network,
-} from "lucide-react";
+import { Globe, Moon, Sun, Network, TrendingUp, Zap, Activity, DollarSign, Eye, EyeOff, Sparkles, Wifi, WifiOff, Power, PowerOff } from "lucide-react";
 import { useAuth, SignedIn, SignedOut, SignInButton, SignUpButton, UserButton } from "@clerk/clerk-react";
 import toast, { Toaster } from "react-hot-toast";
-import {
-  LineChart,
-  Line,
-  XAxis,
-  YAxis,
-  Tooltip,
-  ResponsiveContainer,
-} from "recharts";
+import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, Area, AreaChart } from "recharts";
 import { useValidator } from "../context/validator";
 
 const WS_URL = import.meta.env.VITE_WS_URL ?? "ws://localhost:8081";
@@ -28,94 +15,166 @@ const VALIDATOR_POLL_MS = 10_000;
 
 type Point = { time: string; value: number };
 
-const backendUrl = "http://localhost:5000";
-
+// ---------- Clean Navbar ----------
 function Navbar({
   isDark,
   toggleTheme,
   nodesOnline = 0,
   onGetStarted,
+  onValidatorDisconnect,
+  onValidatorConnect,
+  connectedPublicKey,
 }: {
   isDark: boolean;
   toggleTheme: () => void;
   nodesOnline?: number;
   onGetStarted?: () => void;
+  onValidatorDisconnect?: () => void;
+  onValidatorConnect?: (publicKey: string) => void;
+  connectedPublicKey?: string | null;
 }): JSX.Element {
   const { validator, pendingPayoutsSol, setValidator: setValidatorInContext } = (() => {
     try { return useValidator(); } catch { return { validator: null, pendingPayoutsSol: null, setValidator: undefined } as any; }
   })();
 
-  const handleDisconnectValidator = async () => {
+  const handleConnect = async () => {
+    try {
+      if ((window as any).solana && (window as any).solana.isPhantom) {
+        try {
+          const resp = await (window as any).solana.connect();
+          const gotPk = resp?.publicKey?.toString?.() ?? "";
+          if (!gotPk) {
+            toast.error("Phantom connect returned no public key");
+            return;
+          }
+          try { localStorage.setItem("validatorPublicKey", gotPk); } catch {}
+          try { onValidatorConnect?.(gotPk); } catch (err) { console.debug("onValidatorConnect callback error:", err); }
+          if (typeof setValidatorInContext === "function") setValidatorInContext(gotPk);
+          toast.success("Wallet connected successfully");
+          return;
+        } catch (err) {
+          console.debug("Phantom connect failed:", err);
+          toast.error("Phantom connect failed: " + String(err));
+        }
+      }
+      const manualPk = prompt("Paste your Solana public key to connect as validator:");
+      if (manualPk && manualPk.trim()) {
+        const pk = manualPk.trim();
+        try { localStorage.setItem("validatorPublicKey", pk); } catch {}
+        try { onValidatorConnect?.(pk); } catch (err) { console.debug("onValidatorConnect cb error:", err); }
+        if (typeof setValidatorInContext === "function") setValidatorInContext(pk);
+        toast.success("Validator key set successfully");
+      } else {
+        toast("Connect cancelled");
+      }
+    } catch (err) {
+      console.error("handleConnect error:", err);
+      toast.error("Connect error");
+    }
+  };
+
+  const handleDisconnect = async () => {
     try {
       try { localStorage.removeItem("validatorPublicKey"); } catch {}
       try { if ((window as any).solana?.disconnect) await (window as any).solana.disconnect(); } catch (err) { console.warn("Phantom disconnect failed:", err); }
       if (typeof setValidatorInContext === "function") setValidatorInContext(null);
-      toast.success("Wallet disconnected (local state cleared)");
+      try { onValidatorDisconnect?.(); } catch (err) { console.debug("onValidatorDisconnected cb error:", err); }
+      toast.success("Wallet disconnected successfully");
     } catch (err) {
       console.error("Disconnect failed:", err);
       toast.error("Failed to disconnect");
     }
   };
 
-  const navBgClass = isDark ? "bg-[#071025] bg-opacity-95 border-slate-800/40 shadow-2xl" : "bg-white/95 border-gray-200/60 shadow";
-
   return (
-    <nav className={`fixed top-0 left-0 right-0 z-50 ${navBgClass} backdrop-blur-md border-b`}> 
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+    <nav className={`fixed top-0 left-0 right-0 z-50 transition-all duration-300 ${isDark 
+      ? 'bg-slate-950/80 border-slate-800/50' 
+      : 'bg-white/80 border-slate-200/50'
+    } backdrop-blur-xl border-b`}>
+      <div className="max-w-7xl mx-auto px-6">
         <div className="flex items-center justify-between h-16">
           <div
-            className="flex items-center space-x-3 cursor-pointer"
+            className="flex items-center space-x-3 cursor-pointer group"
             title="Go home"
-            onClick={() => { try { window.location.assign("/"); } catch { /* ignore */ } }}
+            onClick={() => { try { window.location.assign("/"); } catch { } }}
             role="button"
             aria-label="DecentWatch home"
           >
             <div className="relative">
-              <Network className={`w-8 h-8 ${isDark ? "text-blue-300" : "text-blue-600"} animate-pulse`} />
-              <div className="absolute -top-1 -right-1 w-3 h-3 bg-green-500 rounded-full animate-ping" />
+              <Network className={`w-7 h-7 transition-colors duration-200 ${isDark 
+                ? "text-blue-400" 
+                : "text-blue-600"
+              }`} />
+              <div className="absolute -top-1 -right-1 w-2 h-2 bg-green-500 rounded-full" />
             </div>
-            <span className={`text-xl font-bold ${isDark ? 'text-white' : 'text-slate-800'}`}>DecentWatch</span>
+            <span className={`text-lg font-semibold transition-colors duration-200 ${isDark 
+              ? 'text-white' 
+              : 'text-slate-900'
+            }`}>
+              DecentWatch
+            </span>
           </div>
 
           <div className="flex items-center space-x-6">
-            <div className={`hidden md:flex items-center space-x-2 px-3 py-1 rounded-full ${isDark ? 'bg-emerald-900/20 text-emerald-300' : 'bg-emerald-100 text-emerald-700'}`}>
-              <div className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse" />
-              <span className="text-sm font-medium">{nodesOnline} Nodes Online</span>
+            <div className={`hidden md:flex items-center space-x-2 px-3 py-1.5 rounded-full text-sm ${isDark 
+              ? 'bg-slate-800/50 text-slate-300' 
+              : 'bg-slate-100/80 text-slate-700'
+            }`}>
+              <div className="w-2 h-2 bg-green-500 rounded-full" />
+              <span>{nodesOnline} Nodes Online</span>
             </div>
 
             <button
               onClick={toggleTheme}
               aria-label="Toggle theme"
-              className={`p-2 rounded-full transition-all duration-300 hover:scale-110 ${isDark ? 'bg-yellow-400/10 text-yellow-300' : 'bg-slate-100 text-slate-700'}`}
+              className={`p-2 rounded-lg transition-colors duration-200 ${isDark 
+                ? 'text-slate-300 hover:bg-slate-800' 
+                : 'text-slate-600 hover:bg-slate-100'
+              }`}
             >
               {isDark ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
             </button>
 
-            {validator ? (
-              <>
-                <div className={`hidden sm:flex items-center px-3 py-1 rounded-full ${isDark ? 'bg-slate-700/40 text-slate-200' : 'bg-white/90 text-slate-800'} border ${isDark ? 'border-slate-600' : 'border-gray-200'}`}>
-                  <span className="text-xs font-medium mr-2">Pending</span>
-                  <span className="text-sm font-semibold">{pendingPayoutsSol ?? 0} SOL</span>
+            {connectedPublicKey ? (
+              <button
+                onClick={handleDisconnect}
+                className="px-4 py-2 rounded-lg text-sm font-medium transition-colors duration-200 bg-red-600 text-white hover:bg-red-700"
+                type="button"
+                title={`Connected as ${connectedPublicKey.slice(0, 8)}...`}
+              >
+                <div className="flex items-center gap-2">
+                  <PowerOff className="w-4 h-4" />
+                  Disconnect
                 </div>
-
-                <button
-                  onClick={handleDisconnectValidator}
-                  className="px-3 py-1 rounded-md text-sm font-medium transition-colors mr-2 bg-white text-slate-700 border border-slate-300 shadow-sm"
-                  type="button"
-                >
-                  Disconnect Wallet
-                </button>
-              </>
-            ) : null}
+              </button>
+            ) : (
+              <button
+                onClick={handleConnect}
+                className="px-4 py-2 rounded-lg text-sm font-medium transition-colors duration-200 bg-blue-600 text-white hover:bg-blue-700"
+                type="button"
+              >
+                <div className="flex items-center gap-2">
+                  <Power className="w-4 h-4" />
+                  Connect
+                </div>
+              </button>
+            )}
 
             <div className="flex items-center gap-3">
               <SignedOut>
                 <SignInButton>
-                  <button className={`${isDark ? 'px-4 py-2 rounded-lg text-sm font-medium bg-slate-700 text-slate-200' : 'px-4 py-2 rounded-lg text-sm font-medium bg-white text-slate-700'}`} onClick={() => window.location.assign("/tracker")}>Sign in</button>
+                  <button className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors duration-200 ${isDark 
+                    ? 'text-slate-300 hover:bg-slate-800' 
+                    : 'text-slate-700 hover:bg-slate-100'
+                  }`}>
+                    Sign In
+                  </button>
                 </SignInButton>
 
                 <SignUpButton>
-                  <button className="px-4 py-2 rounded-lg text-sm font-medium bg-blue-600 text-white" onClick={() => window.location.assign("/tracker")}>Sign up</button>
+                  <button className="px-4 py-2 rounded-lg text-sm font-medium bg-blue-600 text-white hover:bg-blue-700 transition-colors duration-200">
+                    Sign Up
+                  </button>
                 </SignUpButton>
               </SignedOut>
 
@@ -130,7 +189,7 @@ function Navbar({
   );
 }
 
-/* ------------------ Validator page ------------------ */
+// ---------- Clean Validator Page ----------
 export default function Validator(): JSX.Element {
   const { getToken } = useAuth();
 
@@ -148,13 +207,18 @@ export default function Validator(): JSX.Element {
   const [publicKey, setPublicKey] = useState<string>(() => { try { return localStorage.getItem("validatorPublicKey") ?? ""; } catch { return ""; } });
   const [monitoring, setMonitoring] = useState(false);
   const [tokenInput, setTokenInput] = useState<string>(() => { try { return localStorage.getItem("validator_bearer_token") ?? ""; } catch { return ""; } });
+  const [showKey, setShowKey] = useState(false);
+
+  // registration modal and state
+  const [showNotRegisteredModal, setShowNotRegisteredModal] = useState(false);
+  const [isValidatorRegistered, setIsValidatorRegistered] = useState<boolean | null>(null);
+  const [checkingRegistration, setCheckingRegistration] = useState(false);
 
   const wsRef = useRef<WebSocket | null>(null);
   const pingTimerRef = useRef<number | null>(null);
   const reconnectTimerRef = useRef<number | null>(null);
   const backoffRef = useRef<number>(1000);
 
-  // user-initiated stop prevents auto-reconnect
   const userRequestedDisconnectRef = useRef<boolean>(false);
 
   const [livePoints, setLivePoints] = useState<Point[]>([]);
@@ -164,15 +228,14 @@ export default function Validator(): JSX.Element {
   const [withdrawOpen, setWithdrawOpen] = useState(false);
   const [withdrawLoading, setWithdrawLoading] = useState(false);
 
-  // validators count
   const [validatorsCount, setValidatorsCount] = useState<number | null>(null);
   const validatorsPollRef = useRef<number | null>(null);
   const validatorsBackoffRef = useRef<number>(1);
 
   function saveBearerToken(v: string | null) {
     try {
-      if (v) { localStorage.setItem("validator_bearer_token", v); setTokenInput(v); toast.success("Saved token"); }
-      else { localStorage.removeItem("validator_bearer_token"); setTokenInput(""); toast.success("Cleared token"); }
+      if (v) { localStorage.setItem("validator_bearer_token", v); setTokenInput(v); toast.success("Token saved successfully"); }
+      else { localStorage.removeItem("validator_bearer_token"); setTokenInput(""); toast.success("Token cleared successfully"); }
     } catch { toast.error("Could not save token"); }
   }
 
@@ -235,7 +298,6 @@ export default function Validator(): JSX.Element {
     return { ok: false, status: 0, url: null, resp: null, text: null, json: null, error: lastNetworkErr };
   }
 
-  // fetch validators count (unchanged)
   async function fetchValidatorsCount(): Promise<boolean> {
     try {
       const res = await fetchWithPrefixes("/get-all-validator", { method: "GET", credentials: "include" });
@@ -316,7 +378,73 @@ export default function Validator(): JSX.Element {
     };
   }, [tokenInput, sessionToken, getToken]);
 
-  // ---------- Earnings effect (unchanged behavior mostly) ----------
+  async function checkIsRegisteredValidator(pk: string): Promise<boolean> {
+    if (!pk) return false;
+    try {
+      const trySpecific = await fetchWithPrefixes(`/validator?publicKey=${encodeURIComponent(pk)}`, { method: "GET", credentials: "include" });
+      if (trySpecific.ok && trySpecific.json) {
+        const body = trySpecific.json;
+        if (typeof body.publicKey === "string" && body.publicKey === pk) return true;
+        if (body.validator && typeof body.validator.publicKey === "string" && body.validator.publicKey === pk) return true;
+        if (Array.isArray(body) && body.some((v: any) => v?.publicKey === pk)) return true;
+        if (body.ok && Array.isArray(body.validators) && body.validators.some((v: any) => v?.publicKey === pk)) return true;
+      }
+    } catch (err) {
+      console.debug("[Validator] specific lookup failed:", err);
+    }
+
+    try {
+      const all = await fetchWithPrefixes("/get-all-validator", { method: "GET", credentials: "include" });
+      if (all.ok && all.json) {
+        const body = all.json;
+        if (Array.isArray(body)) {
+          return body.some((v: any) => v?.publicKey === pk || v?.validator?.publicKey === pk);
+        }
+        if (Array.isArray(body.validators)) {
+          return body.validators.some((v: any) => v?.publicKey === pk || v?.validator?.publicKey === pk);
+        }
+      }
+    } catch (err) {
+      console.debug("[Validator] fallback get-all-validator failed:", err);
+    }
+
+    return false;
+  }
+
+  useEffect(() => {
+    let mounted = true;
+    if (!publicKey) {
+      setIsValidatorRegistered(null);
+      setShowNotRegisteredModal(false);
+      setCheckingRegistration(false);
+      return;
+    }
+
+    (async () => {
+      try {
+        setCheckingRegistration(true);
+        const registered = await checkIsRegisteredValidator(publicKey);
+        if (!mounted) return;
+        setIsValidatorRegistered(registered);
+        if (!registered) {
+          setShowNotRegisteredModal(true);
+        } else {
+          setShowNotRegisteredModal(false);
+        }
+      } catch (err) {
+        console.debug("[Validator] registration check error:", err);
+        if (mounted) {
+          setIsValidatorRegistered(false);
+          setShowNotRegisteredModal(true);
+        }
+      } finally {
+        if (mounted) setCheckingRegistration(false);
+      }
+    })();
+
+    return () => { mounted = false; };
+  }, [publicKey]);
+
   useEffect(() => {
     if (!publicKey) return;
     let mounted = true;
@@ -439,7 +567,6 @@ export default function Validator(): JSX.Element {
     };
   }, [publicKey, tokenInput, sessionToken, getToken]);
 
-  // ---------- Browser-check helper ----------
   async function performBrowserCheck(url: string, timeoutMs = CHECK_TIMEOUT_MS) {
     const start = Date.now();
     try {
@@ -466,7 +593,6 @@ export default function Validator(): JSX.Element {
     try { if (ws.readyState === WebSocket.OPEN) { ws.send(JSON.stringify(obj)); return true; } return false; } catch (err) { console.debug("[Validator] safeSend failed", err, obj); return false; }
   }
 
-  // ---------- NEW: create-or-reuse persistent session token ----------
   async function ensureSessionTokenOnce(): Promise<string | null> {
     try {
       const existing = (() => { try { return localStorage.getItem("validatorSessionToken"); } catch { return null; } })();
@@ -485,7 +611,7 @@ export default function Validator(): JSX.Element {
             const token = JSON.stringify(Array.from(sig));
             try { localStorage.setItem("validatorSessionToken", token); } catch {}
             setSessionToken(token);
-            toast.success("Validator session created (signed once)");
+            toast.success("Validator session created successfully");
             return token;
           }
         } catch (err) {
@@ -500,7 +626,7 @@ export default function Validator(): JSX.Element {
         const token = `rnd:${hex}`;
         try { localStorage.setItem("validatorSessionToken", token); } catch {}
         setSessionToken(token);
-        toast("Validator session created (fallback)", { icon: "🔑" });
+        toast("Validator session created", { icon: "" });
         return token;
       } catch (err) {
         console.debug("[Validator] fallback random token creation failed:", err);
@@ -512,7 +638,6 @@ export default function Validator(): JSX.Element {
     }
   }
 
-  // stable tab id (generate once)
   const tabIdRef = useRef<string>((() => {
     try {
       const anyCrypto = (window as any).crypto ?? (globalThis as any).crypto;
@@ -522,10 +647,7 @@ export default function Validator(): JSX.Element {
     }
   })());
 
-  // NEW: track server-side explicit rejection to prevent auto reconnect
   const subscriptionRejectedRef = useRef<boolean>(false);
-
-  // NEW: dedupe duplicate_detected messages per incoming tab
   const duplicateNotifyMapRef = useRef<Map<string, number>>(new Map());
   const DUPLICATE_NOTIFY_TTL_MS = 30_000;
 
@@ -540,10 +662,6 @@ export default function Validator(): JSX.Element {
       reconnectTimerRef.current = null;
     }
 
-    // clear subscriptionRejected only on a fresh manual open (we don't want automatic retries to clear it)
-    // manual starts should call startMonitoring which clears this flag
-    // Here we will not clear it to preserve behavior -> startMonitoring clears it
-
     const ws = new WebSocket(WS_URL);
     wsRef.current = ws;
 
@@ -552,10 +670,8 @@ export default function Validator(): JSX.Element {
 
     ws.onopen = async () => {
       backoffRef.current = 1000;
-      // ensure session token exists
       await ensureSessionTokenOnce().catch((e) => console.debug("[Validator] ensureSessionTokenOnce failed:", e));
 
-      // send subscribe_earnings with tabId & sessionToken — wait for 'subscribed' response
       try {
         safeSend(ws, { type: "subscribe_earnings", data: { publicKey: pk, sessionToken: sessionToken ?? localStorage.getItem("validatorSessionToken"), tabId: tabIdRef.current } });
       } catch (err) {
@@ -581,18 +697,17 @@ export default function Validator(): JSX.Element {
               }, WS_PING_INTERVAL_MS);
               pingStartedLocal = true;
             }
-            toast.success("Connected to Hub");
+            toast.success("Connected to Validation Hub");
             void fetchValidatorsCount();
             return;
           } else {
             subscriptionRejectedRef.current = true;
             const reason = body.error ?? body.message ?? "Subscription rejected by Hub";
             if (reason === "duplicate_connection") {
-              toast.error("Duplicate connection detected: another tab/device is already connected for this wallet.");
+              toast.error("Duplicate connection detected");
             } else {
               toast.error("Subscribe failed: " + String(reason));
             }
-            // prevent auto reconnect until user manually restarts
             userRequestedDisconnectRef.current = true;
             try { ws.close(); } catch {}
             return;
@@ -623,7 +738,7 @@ export default function Validator(): JSX.Element {
           if (expiry > now) return;
           map.set(incomingTabId, now + DUPLICATE_NOTIFY_TTL_MS);
           for (const [k, v] of map.entries()) { if (v < now) map.delete(k); }
-          const msg = payload.data?.message ?? "Another connection for this wallet detected (another tab/device).";
+          const msg = payload.data?.message ?? "Another connection for this wallet detected";
           toast.error(msg);
           return;
         }
@@ -652,12 +767,9 @@ export default function Validator(): JSX.Element {
           }
 
           const effectiveLatency = ok ? measuredLatency : Math.max(measuredLatency, CHECK_TIMEOUT_MS + 5000);
-
-          // Always include sessionToken (created once)
           const currentSessionToken = sessionToken ?? (() => { try { return localStorage.getItem("validatorSessionToken"); } catch { return null; } })();
           const reply: any = { type: "validate", data: { validatorId: localStorage.getItem("validatorId"), callbackId, websiteId, status: ok ? "Good" : "Bad", latency: effectiveLatency, sessionToken: currentSessionToken } };
 
-          // Do NOT sign every validate (avoid repeated Phantom popups)
           try { const okSent = safeSend(ws, reply); console.debug("[Validator] sent validate reply", { okSent, reply }); } catch (err) { console.error("[Validator] failed to send validate reply", err, reply); }
           return;
         }
@@ -671,7 +783,6 @@ export default function Validator(): JSX.Element {
       if (pingTimerRef.current) { window.clearInterval(pingTimerRef.current); pingTimerRef.current = null; }
       setMonitoring(false);
 
-      // If server explicitly rejected subscription, don't auto-reconnect automatically.
       if (subscriptionRejectedRef.current) {
         console.info("[Validator] subscription was rejected by server — not auto-reconnecting until user restarts");
         return;
@@ -682,7 +793,7 @@ export default function Validator(): JSX.Element {
         return;
       }
 
-      toast.error("Disconnected from Hub (will retry)");
+      toast.error("Disconnected from Hub - reconnecting...");
       const d = backoffRef.current || 1000;
       reconnectTimerRef.current = window.setTimeout(() => {
         const pk2 = publicKey || localStorage.getItem("validatorPublicKey") || "";
@@ -696,6 +807,26 @@ export default function Validator(): JSX.Element {
     ws.onerror = (e) => { console.error("[Validator] WS error event:", e); };
   }
 
+  function stopMonitoring(reasonMsg?: string) {
+    try {
+      userRequestedDisconnectRef.current = true;
+      subscriptionRejectedRef.current = false;
+      if (reconnectTimerRef.current) {
+        window.clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
+      }
+      try { wsRef.current?.close(); } catch {}
+      wsRef.current = null;
+      if (pingTimerRef.current) { window.clearInterval(pingTimerRef.current); pingTimerRef.current = null; }
+      setMonitoring(false);
+      backoffRef.current = 1000;
+      if (reasonMsg) toast.info(reasonMsg);
+      else toast.success("Monitoring stopped successfully");
+    } catch (err) {
+      console.error("stopMonitoring error:", err);
+    }
+  }
+
   function startMonitoring() {
     const pk = publicKey || localStorage.getItem("validatorPublicKey") || "";
     if (!pk) {
@@ -704,7 +835,6 @@ export default function Validator(): JSX.Element {
           const gotPk = r?.publicKey?.toString?.() ?? "";
           setPublicKey(gotPk);
           try { localStorage.setItem("validatorPublicKey", gotPk); } catch {}
-          // manual start clears user-stop and subscription rejection
           userRequestedDisconnectRef.current = false;
           subscriptionRejectedRef.current = false;
           openWsAndRegister(gotPk);
@@ -722,24 +852,52 @@ export default function Validator(): JSX.Element {
     openWsAndRegister(pk);
   }
 
-  function stopMonitoring() {
-    try {
-      userRequestedDisconnectRef.current = true;
-      subscriptionRejectedRef.current = false;
-      if (reconnectTimerRef.current) {
-        window.clearTimeout(reconnectTimerRef.current);
-        reconnectTimerRef.current = null;
+  useEffect(() => {
+    function checkLocalPublicKeyAndReact(trigger?: string) {
+      try {
+        const stored = localStorage.getItem("validatorPublicKey") ?? "";
+        if (!stored && monitoring) {
+          setPublicKey("");
+          stopMonitoring("Wallet disconnected elsewhere");
+          return;
+        }
+        if (stored && monitoring && stored !== publicKey) {
+          setPublicKey(stored);
+          stopMonitoring("Validator key changed elsewhere");
+          return;
+        }
+        if (stored && !monitoring && stored !== publicKey) {
+          setPublicKey(stored);
+        }
+        if (!stored && !monitoring && publicKey) {
+          setPublicKey("");
+        }
+      } catch (err) {
+        console.debug("[Validator] checkLocalPublicKeyAndReact error:", err);
       }
-      try { wsRef.current?.close(); } catch {}
-      wsRef.current = null;
-      if (pingTimerRef.current) { window.clearInterval(pingTimerRef.current); pingTimerRef.current = null; }
-      setMonitoring(false);
-      toast.success("Stopped monitoring (manual)");
-      backoffRef.current = 1000;
-    } catch (err) {
-      console.error("stopMonitoring error:", err);
     }
-  }
+
+    function onStorage(e: StorageEvent) {
+      if (e.key === "validatorPublicKey") {
+        checkLocalPublicKeyAndReact("storage");
+      }
+    }
+
+    function onFocus() { checkLocalPublicKeyAndReact("focus"); }
+    function onVisibility() { if (!document.hidden) checkLocalPublicKeyAndReact("visibility"); }
+
+    window.addEventListener("storage", onStorage);
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onVisibility);
+
+    checkLocalPublicKeyAndReact("mount");
+
+    return () => {
+      window.removeEventListener("storage", onStorage);
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }, [monitoring, publicKey]);
 
   async function fetchEarningsOnce() {
     if (!publicKey) return;
@@ -762,7 +920,7 @@ export default function Validator(): JSX.Element {
         toast.error("Withdraw failed: " + (result.json?.error ?? result.text ?? `HTTP ${result.status}`));
         console.debug("[Withdraw] failed", result.status, result.url, result.text ?? result.json);
       } else {
-        toast.success("Withdraw successful — tx: " + (result.json?.txSignature ?? "unknown"));
+        toast.success("Withdraw completed successfully");
         setPendingPayouts(0);
         void fetchValidatorsCount();
       }
@@ -770,26 +928,62 @@ export default function Validator(): JSX.Element {
     finally { setWithdrawLoading(false); setWithdrawOpen(false); }
   }
 
+  async function handleReconnectCorrectWallet() {
+    try {
+      try { localStorage.removeItem("validatorPublicKey"); } catch {}
+      setPublicKey("");
+      try { if ((window as any).solana?.disconnect) await (window as any).solana.disconnect(); } catch (err) { console.debug("Phantom disconnect failed:", err); }
+
+      if ((window as any).solana && (window as any).solana.isPhantom) {
+        try {
+          const resp = await (window as any).solana.connect();
+          const gotPk = resp?.publicKey?.toString?.() ?? "";
+          if (!gotPk) {
+            toast.error("Phantom connect returned no public key");
+            return;
+          }
+          try { localStorage.setItem("validatorPublicKey", gotPk); } catch {}
+          setPublicKey(gotPk);
+          setShowNotRegisteredModal(false);
+          toast.success("Connected new wallet successfully");
+          return;
+        } catch (err) {
+          console.debug("Phantom reconnect failed:", err);
+          toast.error("Phantom connect failed or was cancelled");
+          return;
+        }
+      }
+
+      const manual = prompt("Paste the correct validator Solana public key to connect:");
+      if (manual && manual.trim()) {
+        const pk = manual.trim();
+        try { localStorage.setItem("validatorPublicKey", pk); } catch {}
+        setPublicKey(pk);
+        setShowNotRegisteredModal(false);
+        toast.success("Public key set successfully");
+      } else {
+        toast("Connect cancelled");
+      }
+    } catch (err) {
+      console.error("handleReconnectCorrectWallet:", err);
+      toast.error("Failed to reconnect correct wallet");
+    }
+  }
+
+  function handleBecomeValidator() {
+    try {
+      if (publicKey) {
+        try { localStorage.setItem("validatorPublicKey", publicKey); } catch {}
+      }
+      window.location.assign("/become-validator");
+    } catch (err) {
+      console.error("handleBecomeValidator:", err);
+      toast.error("Could not start onboarding");
+    }
+  }
+
   const totalFromPoints = (pts: Point[]) => pts.reduce((s, p) => s + (Number(p.value) || 0), 0);
   const formatMoney = (n: number) => (isNaN(n) ? "-" : `${new Intl.NumberFormat("en-US", { maximumFractionDigits: 6 }).format(n)} SOL`);
-  function EarningsChart({ points }: { points: Point[] }) {
-    return (
-      <div className="w-full h-64 rounded-md p-3" style={{ background: "linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01))", border: "1px solid rgba(255,255,255,0.03)" }}>
-        {points.length === 0 ? (
-          <div className={`flex items-center justify-center h-full text-sm ${secondaryTextColor}`} >No earnings data yet.</div>
-        ) : (
-          <ResponsiveContainer width="100%" height="100%">
-            <LineChart data={points}>
-              <XAxis dataKey="time" tickFormatter={(t) => String(t).slice(11, 19)} minTickGap={10} />
-              <YAxis />
-              <Tooltip formatter={(value: any) => `${Number(value).toLocaleString(undefined, { maximumFractionDigits: 6 })} SOL`} />
-              <Line type="monotone" dataKey="value" stroke="#10b981" strokeWidth={2} dot={false} />
-            </LineChart>
-          </ResponsiveContainer>
-        )}
-      </div>
-    );
-  }
 
   useEffect(() => {
     return () => {
@@ -799,93 +993,407 @@ export default function Validator(): JSX.Element {
     };
   }, []);
 
-  // styling variables
-  const pageBg = isDarkMode ? "bg-gradient-to-br from-[#071025] via-[#07172a] to-[#061028]" : "bg-gradient-to-br from-blue-50 via-indigo-50 to-cyan-50";
-  const headerTextColor = isDarkMode ? "text-white" : "text-gray-900";
-  const bodyTextColor = isDarkMode ? "text-white" : "text-slate-900";
-  const secondaryTextColor = isDarkMode ? "text-slate-300" : "text-slate-600";
-  const inputTextColor = isDarkMode ? "text-white" : "text-slate-900";
-
   return (
     <>
-      <Navbar isDark={isDarkMode} toggleTheme={() => setIsDarkMode((s) => !s)} nodesOnline={validatorsCount ?? 0} onGetStarted={() => window.location.assign("/get-started")} />
+      <Navbar
+        isDark={isDarkMode}
+        toggleTheme={() => setIsDarkMode((s) => !s)}
+        nodesOnline={validatorsCount ?? 0}
+        onGetStarted={() => window.location.assign("/get-started")}
+        connectedPublicKey={publicKey || null}
+        onValidatorDisconnect={() => {
+          try { localStorage.removeItem("validatorPublicKey"); } catch {}
+          setPublicKey("");
+          stopMonitoring("Wallet disconnected from Navbar");
+        }}
+        onValidatorConnect={(pk) => {
+          setPublicKey(pk);
+          try { localStorage.setItem("validatorPublicKey", pk); } catch {}
+          toast.success("Wallet connected - click Start Monitoring");
+        }}
+      />
 
-      <div className={`relative min-h-screen transition-colors duration-200 pt-20 ${pageBg}`}>
-        <div aria-hidden className="pointer-events-none fixed inset-0 -z-20">
-          <div className="absolute -top-40 -left-40 w-[680px] h-[680px] rounded-full blur-3xl opacity-40" style={{ background: 'radial-gradient(circle at 30% 30%, rgba(99,102,241,0.55), transparent 28%), radial-gradient(circle at 70% 70%, rgba(236,72,153,0.28), transparent 30%)', transform: 'translateZ(0)' }} />
-          <div className="absolute -bottom-40 -right-40 w-[620px] h-[620px] rounded-full blur-2xl opacity-30" style={{ background: 'radial-gradient(circle at 40% 40%, rgba(14,165,233,0.32), transparent 25%)' }} />
-          <div className="absolute inset-0 -z-10" style={{ backgroundImage: 'radial-gradient(rgba(255,255,255,0.015) 1px, transparent 1px)', backgroundSize: '14px 14px', opacity: 0.6 }} />
-        </div>
+      <div className={`min-h-screen transition-colors duration-300 pt-16 ${isDarkMode 
+        ? 'bg-slate-950' 
+        : 'bg-gray-50'
+      }`}>
+        {/* Clean background with subtle dots like home page */}
+        <div 
+          className="fixed inset-0 pointer-events-none"
+          style={{
+            backgroundImage: isDarkMode 
+              ? 'radial-gradient(rgba(59, 130, 246, 0.4) 1px, transparent 1px)'
+              : 'radial-gradient(rgba(100, 116, 139, 0.2) 1px, transparent 1px)',
+            backgroundSize: '50px 50px'
+          }}
+        />
 
-        <Toaster position="top-right" />
-        <div className="max-w-3xl mx-auto py-12 px-4">
-          <div className="rounded-xl p-1" style={{ background: isDarkMode ? 'linear-gradient(90deg, rgba(99,102,241,0.08), rgba(129,140,248,0.04))' : 'linear-gradient(90deg, rgba(59,130,246,0.06), rgba(99,102,241,0.03))' }}>
-            <div className="rounded-xl overflow-hidden shadow-2xl" style={{ boxShadow: isDarkMode ? '0 20px 60px rgba(2,6,23,0.6)' : '0 10px 40px rgba(15,23,42,0.08)' }}>
-              <div
-                className="p-6"
-                style={{
-                  background: isDarkMode ? 'linear-gradient(135deg, rgba(8,18,33,0.92) 0%, rgba(18,32,54,0.9) 65%, rgba(203,60,124,0.04) 100%)' : 'linear-gradient(135deg, rgba(255,255,255,0.88) 0%, rgba(245,248,255,0.92) 65%)',
-                  border: isDarkMode ? '1px solid rgba(255,255,255,0.03)' : '1px solid rgba(2,6,23,0.04)',
-                  backdropFilter: 'saturate(120%) blur(6px)',
-                }}
-              >
-                <div className="flex items-start justify-between gap-6">
-                  <div className="flex items-start gap-4">
-                    <Globe className="w-8 h-8 text-blue-400 mt-1" />
-                    <div>
-                      <h1 className={`text-2xl font-bold ${headerTextColor}`}>Validator —</h1>
-                      <h2 className={`text-2xl font-bold ${headerTextColor}`}>Monitoring & Earnings</h2>
-                    </div>
+        <Toaster position="top-right" toastOptions={{
+          style: {
+            background: isDarkMode ? 'rgba(15, 23, 42, 0.9)' : 'rgba(255, 255, 255, 0.9)',
+            color: isDarkMode ? '#e2e8f0' : '#1e293b',
+            border: isDarkMode ? '1px solid rgba(71, 85, 105, 0.3)' : '1px solid rgba(226, 232, 240, 0.3)',
+            backdropFilter: 'blur(10px)',
+            borderRadius: '8px'
+          }
+        }} />
+
+        <div className="max-w-6xl mx-auto py-8 px-6">
+          {/* Main validator card with clean styling */}
+          <div className={`rounded-lg shadow-xl transition-colors duration-300 ${isDarkMode 
+            ? 'bg-slate-900/90 border border-slate-800' 
+            : 'bg-white/90 border border-slate-200'
+          } backdrop-blur-sm`}>
+            <div className="p-8">
+              {/* Header */}
+              <div className="flex items-start justify-between mb-8">
+                <div className="flex items-center gap-4">
+                  <div className={`p-3 rounded-lg ${isDarkMode 
+                    ? 'bg-blue-500/10' 
+                    : 'bg-blue-50'
+                  }`}>
+                    <Globe className={`w-8 h-8 ${isDarkMode 
+                      ? 'text-blue-400' 
+                      : 'text-blue-600'
+                    }`} />
                   </div>
-                </div>
-
-                <div className="mt-6">
-                  <label className="block text-sm text-slate-300 mb-2">Validator public key</label>
-                  <div className="flex gap-2">
-                    <input value={publicKey} onChange={(e) => setPublicKey(e.target.value)} placeholder="Paste your Solana public key" className={`flex-1 px-3 py-2 rounded-md ${isDarkMode ? 'bg-slate-800/50 border border-slate-700' : 'bg-white/6 border border-white/8'} text-sm ${inputTextColor} focus:outline-none focus:ring-2 focus:ring-green-400`}   />
-                    {monitoring ? <button onClick={stopMonitoring} className="px-4 py-2 bg-red-600 rounded-md shadow">Stop</button>
-                      : <button onClick={startMonitoring} className="px-4 py-2 bg-green-600 rounded-md shadow">Start Streaming</button>}
-                  </div>
-                </div>
-
-                <div className="mt-6 grid grid-cols-2 gap-6">
                   <div>
-                    <div className="text-xs text-slate-300">Total (history + live)</div>
-                    <div className={`text-2xl font-semibold ${bodyTextColor}`} >{formatMoney(totalFromPoints(livePoints))}</div>
+                    <h1 className={`text-3xl font-bold mb-1 ${isDarkMode 
+                      ? 'text-white' 
+                      : 'text-slate-900'
+                    }`}>
+                      Validator Control Center
+                    </h1>
+                    <p className={`text-lg ${isDarkMode 
+                      ? 'text-slate-400' 
+                      : 'text-slate-600'
+                    }`}>
+                      Real-time Network Monitoring & Earnings Dashboard
+                    </p>
                   </div>
+                </div>
+                
+                {/* Status indicator */}
+                <div className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium ${
+                  monitoring 
+                    ? isDarkMode 
+                      ? 'bg-green-500/10 text-green-400 border border-green-500/20' 
+                      : 'bg-green-50 text-green-700 border border-green-200'
+                    : isDarkMode
+                      ? 'bg-slate-800 text-slate-400 border border-slate-700'
+                      : 'bg-gray-100 text-gray-600 border border-gray-300'
+                }`}>
+                  {monitoring ? <Wifi className="w-4 h-4" /> : <WifiOff className="w-4 h-4" />}
+                  {monitoring ? 'LIVE' : 'OFFLINE'}
+                </div>
+              </div>
 
-                  <div>
-                    <div className="text-xs text-slate-300">Pending payouts</div>
-                    <div className={`text-2xl font-semibold ${bodyTextColor}`} >{pendingPayouts === null ? "-" : formatMoney(pendingPayouts)}</div>
-                    <div className="mt-3">
-                      <button onClick={async () => { await fetchEarningsOnce(); setWithdrawOpen(true); }} className="px-3 py-1 bg-violet-600 rounded-md text-sm text-white shadow hover:scale-105 transition-transform">Withdraw</button>
+              {/* Public key input */}
+              <div className="mb-8">
+                <label className={`block text-sm font-medium mb-3 ${isDarkMode 
+                  ? 'text-slate-300' 
+                  : 'text-slate-700'
+                }`}>
+                  Validator Public Key
+                </label>
+                <div className="flex gap-3">
+                  <div className="flex-1 relative">
+                    <input 
+                      value={showKey ? publicKey : publicKey ? '•'.repeat(Math.min(publicKey.length, 40)) + (publicKey.length > 40 ? '...' : '') : ''}
+                      onChange={(e) => setPublicKey(e.target.value)} 
+                      placeholder="Enter your Solana validator public key" 
+                      className={`w-full px-4 py-3 rounded-lg text-sm font-mono transition-colors duration-200 ${isDarkMode 
+                        ? 'bg-slate-800 border border-slate-700 text-slate-200 placeholder-slate-500 focus:border-blue-500' 
+                        : 'bg-white border border-slate-300 text-slate-900 placeholder-slate-400 focus:border-blue-500'
+                      } focus:outline-none focus:ring-2 focus:ring-blue-500/20`}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowKey(!showKey)}
+                      className={`absolute right-3 top-1/2 -translate-y-1/2 p-1 rounded transition-colors duration-200 ${isDarkMode 
+                        ? 'text-slate-400 hover:text-slate-200' 
+                        : 'text-slate-500 hover:text-slate-700'
+                      }`}
+                    >
+                      {showKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                    </button>
+                  </div>
+                  
+                  {monitoring ? (
+                    <button 
+                      onClick={() => stopMonitoring()} 
+                      className="px-6 py-3 rounded-lg font-medium text-white bg-red-600 hover:bg-red-700 transition-colors duration-200"
+                    >
+                      <div className="flex items-center gap-2">
+                        <PowerOff className="w-4 h-4" />
+                        Stop
+                      </div>
+                    </button>
+                  ) : (
+                    <button 
+                      onClick={startMonitoring} 
+                      className="px-6 py-3 rounded-lg font-medium text-white bg-blue-600 hover:bg-blue-700 transition-colors duration-200"
+                    >
+                      <div className="flex items-center gap-2">
+                        <Zap className="w-4 h-4" />
+                        Start
+                      </div>
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {/* Stats grid */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
+                {/* Total Earnings */}
+                <div className={`p-6 rounded-lg transition-colors duration-300 ${isDarkMode 
+                  ? 'bg-slate-800/50 border border-slate-700' 
+                  : 'bg-slate-50 border border-slate-200'
+                }`}>
+                  <div className="flex items-start justify-between mb-4">
+                    <div className={`p-2 rounded ${isDarkMode 
+                      ? 'bg-blue-500/10' 
+                      : 'bg-blue-50'
+                    }`}>
+                      <TrendingUp className={`w-5 h-5 ${isDarkMode 
+                        ? 'text-blue-400' 
+                        : 'text-blue-600'
+                      }`} />
                     </div>
+                    <span className={`text-xs font-medium px-2 py-1 rounded ${isDarkMode 
+                      ? 'bg-slate-700 text-slate-300' 
+                      : 'bg-white text-slate-600'
+                    }`}>
+                      Total Earned
+                    </span>
+                  </div>
+                  <div className={`text-2xl font-bold mb-1 ${isDarkMode 
+                    ? 'text-white' 
+                    : 'text-slate-900'
+                  }`}>
+                    {formatMoney(totalFromPoints(livePoints))}
+                  </div>
+                  <div className={`text-sm ${isDarkMode 
+                    ? 'text-slate-400' 
+                    : 'text-slate-500'
+                  }`}>
+                    Historical + Live Data
                   </div>
                 </div>
 
-                <div className="mt-8">
-                  <h3 className={`text-lg font-medium ${bodyTextColor} mb-3`} >Earnings (live)</h3>
-                  <div className="rounded-lg overflow-hidden p-3" style={{ background: "linear-gradient(180deg, rgba(255,255,255,0.01), rgba(255,255,255,0.005))", border: "1px solid rgba(255,255,255,0.03)" }}>
-                    <EarningsChart points={livePoints} />
+                {/* Pending Payouts */}
+                <div className={`p-6 rounded-lg transition-colors duration-300 ${isDarkMode 
+                  ? 'bg-slate-800/50 border border-slate-700' 
+                  : 'bg-slate-50 border border-slate-200'
+                }`}>
+                  <div className="flex items-start justify-between mb-4">
+                    <div className={`p-2 rounded ${isDarkMode 
+                      ? 'bg-green-500/10' 
+                      : 'bg-green-50'
+                    }`}>
+                      <DollarSign className={`w-5 h-5 ${isDarkMode 
+                        ? 'text-green-400' 
+                        : 'text-green-600'
+                      }`} />
+                    </div>
+                    <span className={`text-xs font-medium px-2 py-1 rounded ${isDarkMode 
+                      ? 'bg-slate-700 text-slate-300' 
+                      : 'bg-white text-slate-600'
+                    }`}>
+                      Available
+                    </span>
                   </div>
+                  <div className={`text-2xl font-bold mb-3 ${isDarkMode 
+                    ? 'text-white' 
+                    : 'text-slate-900'
+                  }`}>
+                    {pendingPayouts === null ? "-" : formatMoney(pendingPayouts)}
+                  </div>
+                  <button 
+                    onClick={async () => { await fetchEarningsOnce(); setWithdrawOpen(true); }} 
+                    className="w-full px-4 py-2 rounded-lg font-medium text-white bg-green-600 hover:bg-green-700 transition-colors duration-200"
+                  >
+                    Withdraw
+                  </button>
+                </div>
+              </div>
+
+              {/* Chart section */}
+              <div>
+                <div className="flex items-center justify-between mb-6">
+                  <h3 className={`text-xl font-semibold ${isDarkMode 
+                    ? 'text-white' 
+                    : 'text-slate-900'
+                  }`}>
+                    Live Earnings Stream
+                  </h3>
+                  <div className={`flex items-center gap-2 px-3 py-1 rounded-full text-xs font-medium ${isDarkMode 
+                    ? 'bg-slate-800 text-slate-300' 
+                    : 'bg-slate-100 text-slate-700'
+                  }`}>
+                    <Activity className="w-3 h-3" />
+                    Real-time
+                  </div>
+                </div>
+                
+                <div className={`rounded-lg p-6 transition-colors duration-300 ${isDarkMode 
+                  ? 'bg-slate-800/30 border border-slate-700' 
+                  : 'bg-white border border-slate-200'
+                }`}>
+                  <ResponsiveContainer width="100%" height={400}>
+                    <AreaChart data={livePoints} margin={{ top: 20, right: 30, left: 20, bottom: 20 }}>
+                      <defs>
+                        <linearGradient id="earningsGradient" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="0%" stopColor={isDarkMode ? "#3b82f6" : "#2563eb"} stopOpacity={0.3}/>
+                          <stop offset="100%" stopColor={isDarkMode ? "#3b82f6" : "#2563eb"} stopOpacity={0.05}/>
+                        </linearGradient>
+                      </defs>
+                      <XAxis 
+                        dataKey="time" 
+                        tickFormatter={(t) => String(t).slice(11, 19)} 
+                        minTickGap={30}
+                        tick={{ fontSize: 12, fill: isDarkMode ? '#94a3b8' : '#64748b' }}
+                        axisLine={{ stroke: isDarkMode ? '#475569' : '#cbd5e1' }}
+                      />
+                      <YAxis 
+                        tick={{ fontSize: 12, fill: isDarkMode ? '#94a3b8' : '#64748b' }}
+                        axisLine={{ stroke: isDarkMode ? '#475569' : '#cbd5e1' }}
+                      />
+                      <Tooltip 
+                        formatter={(value: any) => [`${Number(value).toLocaleString(undefined, { maximumFractionDigits: 6 })} SOL`, 'Earnings']}
+                        contentStyle={{
+                          backgroundColor: isDarkMode ? 'rgba(15,23,42,0.95)' : 'rgba(255,255,255,0.95)',
+                          border: isDarkMode ? '1px solid rgba(71,85,105,0.3)' : '1px solid rgba(226,232,240,0.3)',
+                          borderRadius: '8px',
+                          color: isDarkMode ? '#e2e8f0' : '#1e293b',
+                          fontSize: '13px'
+                        }}
+                      />
+                      <Area 
+                        type="monotone" 
+                        dataKey="value" 
+                        stroke={isDarkMode ? "#3b82f6" : "#2563eb"} 
+                        strokeWidth={2}
+                        fill="url(#earningsGradient)"
+                        dot={{ fill: isDarkMode ? "#3b82f6" : "#2563eb", strokeWidth: 2, r: 3 }}
+                        activeDot={{ 
+                          r: 5, 
+                          stroke: isDarkMode ? "#3b82f6" : "#2563eb", 
+                          strokeWidth: 2, 
+                          fill: isDarkMode ? "#0f172a" : "#ffffff"
+                        }}
+                      />
+                    </AreaChart>
+                  </ResponsiveContainer>
                 </div>
               </div>
             </div>
           </div>
         </div>
 
+        {/* Clean withdraw modal */}
         {withdrawOpen && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-            <div className="bg-white rounded-lg max-w-md w-full p-6 text-gray-900">
-              <h3 className="text-lg font-semibold mb-4">Withdraw Earnings</h3>
-              <p className="mb-4">You have <strong>{formatMoney(Number(pendingPayouts ?? 0))}</strong> available to withdraw.</p>
-              <div className="flex gap-3 justify-end">
-                <button onClick={() => setWithdrawOpen(false)} className="px-3 py-2 rounded-md border">Cancel</button>
-                <button onClick={handleTakeEarnings} disabled={withdrawLoading || (pendingPayouts ?? 0) <= 0} className="px-3 py-2 rounded-md bg-green-600 text-white disabled:opacity-60">
-                  {withdrawLoading ? "Processing..." : "Take it"}
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
+            <div className={`rounded-lg max-w-md w-full p-6 ${isDarkMode 
+              ? 'bg-slate-900 text-white border border-slate-700' 
+              : 'bg-white text-gray-900 border border-slate-200'
+            } shadow-xl`}>
+              <div className="text-center mb-6">
+                <div className={`w-12 h-12 rounded-lg mx-auto mb-4 flex items-center justify-center ${isDarkMode 
+                  ? 'bg-green-500/10' 
+                  : 'bg-green-50'
+                }`}>
+                  <DollarSign className={`w-6 h-6 ${isDarkMode ? 'text-green-400' : 'text-green-600'}`} />
+                </div>
+                <h3 className="text-xl font-semibold mb-2">Withdraw Earnings</h3>
+              </div>
+              
+              <div className={`p-4 rounded-lg mb-6 text-center ${isDarkMode 
+                ? 'bg-slate-800' 
+                : 'bg-slate-50'
+              }`}>
+                <p className="text-sm mb-2">Available Balance</p>
+                <div className="text-2xl font-bold">
+                  {formatMoney(Number(pendingPayouts ?? 0))}
+                </div>
+              </div>
+
+              <div className="flex gap-3">
+                <button 
+                  onClick={() => setWithdrawOpen(false)} 
+                  className={`flex-1 px-4 py-2 rounded-lg font-medium transition-colors duration-200 ${isDarkMode 
+                    ? 'bg-slate-800 text-slate-200 hover:bg-slate-700 border border-slate-700' 
+                    : 'bg-gray-100 text-gray-700 hover:bg-gray-200 border border-gray-200'
+                  }`}
+                >
+                  Cancel
+                </button>
+                <button 
+                  onClick={handleTakeEarnings} 
+                  disabled={withdrawLoading || (pendingPayouts ?? 0) <= 0} 
+                  className="flex-1 px-4 py-2 rounded-lg font-medium text-white bg-green-600 hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors duration-200"
+                >
+                  {withdrawLoading ? "Processing..." : "Withdraw"}
                 </button>
               </div>
-              <div className="text-xs text-gray-500 mt-3">If "Take it" is disabled, there are no pending payouts.</div>
+            </div>
+          </div>
+        )}
+
+        {/* Clean registration modal */}
+        {showNotRegisteredModal && publicKey && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
+            <div className={`rounded-lg max-w-lg w-full p-8 ${isDarkMode 
+              ? 'bg-slate-900 text-white border border-slate-700' 
+              : 'bg-white text-gray-900 border border-slate-200'
+            } shadow-xl`}>
+              <div className="text-center mb-8">
+                <div className={`w-16 h-16 rounded-lg mx-auto mb-4 flex items-center justify-center ${isDarkMode 
+                  ? 'bg-amber-500/10' 
+                  : 'bg-amber-50'
+                }`}>
+                  <Globe className={`w-8 h-8 ${isDarkMode ? 'text-amber-400' : 'text-amber-600'}`} />
+                </div>
+                <h3 className="text-2xl font-semibold mb-4">Wallet Not Registered</h3>
+              </div>
+              
+              <div className={`p-4 rounded-lg mb-6 ${isDarkMode 
+                ? 'bg-slate-800' 
+                : 'bg-slate-50'
+              }`}>
+                <p className="text-center mb-3">
+                  This wallet is not registered as a validator in our network.
+                </p>
+                <div className={`text-center p-3 rounded font-mono text-sm break-all ${isDarkMode 
+                  ? 'bg-slate-700 text-blue-300' 
+                  : 'bg-white text-blue-600'
+                }`}>
+                  {publicKey.slice(0, 12)}...{publicKey.slice(-12)}
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <button
+                  onClick={handleReconnectCorrectWallet}
+                  className={`px-4 py-3 rounded-lg font-medium transition-colors duration-200 ${isDarkMode 
+                    ? 'bg-slate-800 text-slate-200 hover:bg-slate-700 border border-slate-700' 
+                    : 'bg-white text-slate-800 border border-slate-300 hover:bg-slate-50'
+                  }`}
+                >
+                  Connect Registered Wallet
+                </button>
+
+                <button
+                  onClick={handleBecomeValidator}
+                  className="px-4 py-3 rounded-lg font-medium text-white bg-blue-600 hover:bg-blue-700 transition-colors duration-200"
+                >
+                  Register as Validator
+                </button>
+              </div>
+
+              <p className={`text-xs mt-4 text-center ${isDarkMode ? 'text-slate-400' : 'text-slate-500'}`}>
+                Connect a registered wallet or register this wallet as a validator.
+              </p>
             </div>
           </div>
         )}

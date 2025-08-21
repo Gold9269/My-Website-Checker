@@ -127,6 +127,76 @@ function Navbar({
     }
   });
 
+  // ----------------- NEW: real-time localStorage sync -----------------
+  // Keeps isValidatorLocal and validator context up-to-date when other tabs/pages
+  // add/remove "validatorPublicKey". Also hydrates context when a key is added.
+  useEffect(() => {
+    let mounted = true;
+
+    async function syncFromStorage() {
+      try {
+        const stored = localStorage.getItem("validatorPublicKey");
+        const has = !!stored;
+
+        // update local flag
+        if (mounted) setIsValidatorLocal(has);
+
+        if (!has) {
+          // key removed -> clear validator context immediately
+          try {
+            if (typeof setValidatorInContext === "function") setValidatorInContext(null);
+          } catch (err) {
+            console.debug("setValidatorInContext(null) failed:", err);
+          }
+          return;
+        }
+
+        // key present -> try to hydrate context (non-blocking)
+        if (stored && typeof checkValidatorByPublicKey === "function") {
+          try {
+            const rec = await checkValidatorByPublicKey(stored);
+            if (rec && typeof setValidatorInContext === "function") {
+              try {
+                setValidatorInContext(rec);
+              } catch (err) {
+                console.debug("setValidatorInContext(rec) failed:", err);
+              }
+            }
+          } catch (err) {
+            // ignore; just UX improvement
+            console.debug("checkValidatorByPublicKey failed during storage-sync:", err);
+          }
+        }
+      } catch (err) {
+        console.debug("syncFromStorage error:", err);
+      }
+    }
+
+    // initial sync
+    void syncFromStorage();
+
+    function onStorage(e: StorageEvent) {
+      if (e.key === "validatorPublicKey") {
+        void syncFromStorage();
+      }
+    }
+    function onFocus() {
+      // some pages change localStorage without firing storage event in same tab,
+      // so re-check on focus to ensure we pick up changes.
+      void syncFromStorage();
+    }
+
+    window.addEventListener("storage", onStorage);
+    window.addEventListener("focus", onFocus);
+
+    return () => {
+      mounted = false;
+      window.removeEventListener("storage", onStorage);
+      window.removeEventListener("focus", onFocus);
+    };
+  }, [checkValidatorByPublicKey, setValidatorInContext]);
+  // ----------------- end real-time localStorage sync -----------------
+
   // show/hide on scroll
   useEffect(() => {
     prevY.current = typeof window !== "undefined" ? window.scrollY : 0;
@@ -243,7 +313,8 @@ function Navbar({
         notify.success("Validator found — redirecting to validator dashboard");
         window.location.assign("/validator");
       } else {
-        setIsValidatorLocal(false);
+        // if no record we still consider the wallet connected locally
+        setIsValidatorLocal(true);
         notify.success("No validator record — redirecting to onboarding");
         window.location.assign("/become-validator");
       }
@@ -359,6 +430,7 @@ function Navbar({
     </nav>
   );
 }
+
 
 /* ---------------- Dashboard main ---------------- */
 export default function Dashboard(): JSX.Element {
