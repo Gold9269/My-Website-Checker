@@ -43,10 +43,11 @@ import { MouseGlow } from "../components/MouseGlow";
 import { FloatingElements } from "../components/FloatingElements";
 import { WaveAnimation } from "../components/WaveAnimation";
 
-import { useWebsites } from "../context/websites";
+import { useWebsites } from "../hooks/useWebsites";
 import { useValidator } from "../context/validator";
 import { useUI } from "../context/ui";
 import axios from "axios";
+import MusicComponent from "../components/MusicComponent";
 
 const BACKEND = import.meta.env.VITE_API_BASE ?? "http://localhost:5000";
 
@@ -153,21 +154,21 @@ function Navbar({
         }
 
         // key present -> try to hydrate context (non-blocking)
-        if (stored && typeof checkValidatorByPublicKey === "function") {
-          try {
-            const rec = await checkValidatorByPublicKey(stored);
-            if (rec && typeof setValidatorInContext === "function") {
-              try {
-                setValidatorInContext(rec);
-              } catch (err) {
-                console.debug("setValidatorInContext(rec) failed:", err);
-              }
-            }
-          } catch (err) {
-            // ignore; just UX improvement
-            console.debug("checkValidatorByPublicKey failed during storage-sync:", err);
-          }
-        }
+        // if (stored && typeof checkValidatorByPublicKey === "function") {
+        //   try {
+        //     const rec = await checkValidatorByPublicKey(stored);
+        //     if (rec && typeof setValidatorInContext === "function") {
+        //       try {
+        //         setValidatorInContext(rec);
+        //       } catch (err) {
+        //         console.debug("setValidatorInContext(rec) failed:", err);
+        //       }
+        //     }
+        //   } catch (err) {
+        //     // ignore; just UX improvement
+        //     console.debug("checkValidatorByPublicKey failed during storage-sync:", err);
+        //   }
+        // }
       } catch (err) {
         console.debug("syncFromStorage error:", err);
       }
@@ -281,51 +282,51 @@ function Navbar({
   const displayNodes = validatorsCount ?? nodesOnline;
 
   // Phantom connect basic flow
-  async function handleConnectPhantomAndCheck() {
-    if (phantomConnecting) return;
-    setPhantomConnecting(true);
-    try {
-      if (!("solana" in window) || !window.solana?.isPhantom) {
-        notify.error("Phantom wallet not found. Install Phantom or use onboarding.");
-        return;
-      }
-      const resp = await window.solana!.connect?.();
-      const pk = resp?.publicKey?.toString?.() ?? "";
-      if (!pk) {
-        notify.error("Failed to retrieve public key from Phantom.");
-        return;
-      }
-      try {
-        localStorage.setItem("validatorPublicKey", pk);
-      } catch {}
-      let record = null;
-      if (typeof checkValidatorByPublicKey === "function") {
-        try {
-          record = await checkValidatorByPublicKey(pk);
-        } catch {}
-      }
-      if (record) {
-        if (typeof setValidatorInContext === "function") {
-          try {
-            setValidatorInContext(record);
-          } catch {}
-        }
-        setIsValidatorLocal(true);
-        notify.success("Validator found — redirecting to validator dashboard");
-        window.location.assign("/validator");
-      } else {
-        // if no record we still consider the wallet connected locally
-        setIsValidatorLocal(true);
-        notify.success("No validator record — redirecting to onboarding");
-        window.location.assign("/become-validator");
-      }
-    } catch (err) {
-      console.error("Phantom connect/check error:", err);
-      notify.error("Error connecting Phantom (see console).");
-    } finally {
-      setPhantomConnecting(false);
-    }
-  }
+  // async function handleConnectPhantomAndCheck() {
+  //   if (phantomConnecting) return;
+  //   setPhantomConnecting(true);
+  //   try {
+  //     if (!("solana" in window) || !window.solana?.isPhantom) {
+  //       notify.error("Phantom wallet not found. Install Phantom or use onboarding.");
+  //       return;
+  //     }
+  //     const resp = await window.solana!.connect?.();
+  //     const pk = resp?.publicKey?.toString?.() ?? "";
+  //     if (!pk) {
+  //       notify.error("Failed to retrieve public key from Phantom.");
+  //       return;
+  //     }
+  //     try {
+  //       localStorage.setItem("validatorPublicKey", pk);
+  //     } catch {}
+  //     let record = null;
+  //     if (typeof checkValidatorByPublicKey === "function") {
+  //       try {
+  //         record = await checkValidatorByPublicKey(pk);
+  //       } catch {}
+  //     }
+  //     if (record) {
+  //       if (typeof setValidatorInContext === "function") {
+  //         try {
+  //           setValidatorInContext(record);
+  //         } catch {}
+  //       }
+  //       setIsValidatorLocal(true);
+  //       notify.success("Validator found — redirecting to validator dashboard");
+  //       window.location.assign("/validator");
+  //     } else {
+  //       // if no record we still consider the wallet connected locally
+  //       setIsValidatorLocal(true);
+  //       notify.success("No validator record — redirecting to onboarding");
+  //       window.location.assign("/become-validator");
+  //     }
+  //   } catch (err) {
+  //     console.error("Phantom connect/check error:", err);
+  //     notify.error("Error connecting Phantom (see console).");
+  //   } finally {
+  //     setPhantomConnecting(false);
+  //   }
+  // }
 
   const handleDisconnect = async () => {
     try {
@@ -387,23 +388,13 @@ function Navbar({
               {isDark ? <Sun className="w-6 h-6" /> : <Moon className="w-6 h-6" />}
             </button>
 
-            {!(validator || isValidatorLocal) ? (
-              <button 
-                onClick={handleConnectPhantomAndCheck} 
-                disabled={phantomConnecting} 
+            <button 
+                onClick={() => window.location.assign("/become-validator")}
                 title="Become validator" 
                 className={`px-6 py-3 rounded-xl text-sm font-semibold transition-all duration-300 hover:scale-105 ${isDark ? "bg-gradient-to-r from-purple-600 to-blue-600 text-white shadow-lg" : "bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-lg"} disabled:opacity-50`}
               >
-                {phantomConnecting ? "Connecting..." : "Become Validator"}
-              </button>
-            ) : (
-              <button 
-                onClick={handleDisconnect} 
-                className="px-6 py-3 rounded-xl text-sm font-semibold bg-gradient-to-r from-red-600 to-red-700 text-white transition-all duration-300 hover:scale-105 shadow-lg"
-              >
-                Disconnect Wallet
-              </button>
-            )}
+                {"Become Validator"}
+            </button>
 
             <div className="flex items-center gap-4">
               <SignedOut>
@@ -556,7 +547,7 @@ export default function Dashboard(): JSX.Element {
       const headers: Record<string, string> = { Accept: "application/json" };
       if (token) headers.Authorization = `Bearer ${token}`;
 
-      const r = await fetch(`${BACKEND}/api/v1/get-all-websites`, { credentials: "include", headers, signal });
+      const r = await fetch(`${BACKEND}/api/v1/get-all-db-websites`, { credentials: "include", headers, signal });
       if (!r.ok) return null;
       const j = await r.json().catch(() => null);
       const c = parseCountFromJson(j);
@@ -579,7 +570,7 @@ export default function Dashboard(): JSX.Element {
       const headers: Record<string, string> = { Accept: "application/json" };
       if (token) headers.Authorization = `Bearer ${token}`;
 
-      const r = await fetch(`${BACKEND}/api/v1/get-all-validator`, { credentials: "include", headers, signal });
+      const r = await fetch(`${BACKEND}/api/v1/get-all-db-validator`, { credentials: "include", headers, signal });
       if (!r.ok) return null;
       const j = await r.json().catch(() => null);
       const c = parseCountFromJson(j);
@@ -666,7 +657,7 @@ export default function Dashboard(): JSX.Element {
         const headers: Record<string, string> = { Accept: "application/json" };
         if (token) headers.Authorization = `Bearer ${token}`;
 
-        const r = await fetch(`${BACKEND}/api/v1/get-all-validator`, {
+        const r = await fetch(`${BACKEND}/api/v1/get-all-db-validator`, {
           credentials: "include",
           headers,
           signal: controller.signal,
@@ -674,11 +665,13 @@ export default function Dashboard(): JSX.Element {
         if (!r.ok) return;
         const j = await r.json().catch(() => null);
         const arr = Array.isArray(j) ? j : Array.isArray(j?.validators) ? j.validators : Array.isArray(j?.data) ? j.data : [];
+        console.log("arr is ..................",arr);
         if (!Array.isArray(arr)) return;
         const normalized = arr
           .map((v: any) => ({ ...v, _pendingNumeric: Number(v.pendingPayouts ?? 0) }))
           .sort((a: any, b: any) => (b._pendingNumeric || 0) - (a._pendingNumeric || 0))
           .slice(0, 8);
+          console.log("normalized is ..................",normalized);
         if (mounted) setTopValidators(normalized);
       } catch (err) {
         if ((err as any)?.name !== "AbortError") console.error("fetchTopValidators error", err);
@@ -702,20 +695,20 @@ export default function Dashboard(): JSX.Element {
   async function fetchSolPriceOnce() {
     setPriceLoading(true);
     try {
-      try {
-        const resp = await fetch(`${BACKEND}/api/v1/price/sol`, { credentials: "include", headers: { Accept: "application/json" } });
-        if (resp.ok) {
-          const j = await resp.json().catch(() => null);
-          const price = j?.price ?? j?.sol?.price ?? j?.data?.price ?? null;
-          if (typeof price === "number") {
-            setSolPriceUsd(price);
-            setPriceLoading(false);
-            return;
-          }
-        }
-      } catch {
-        // backend failed - continue to fallback
-      }
+      // try {
+      //   const resp = await fetch(`${BACKEND}/api/v1/price/sol`, { credentials: "include", headers: { Accept: "application/json" } });
+      //   if (resp.ok) {
+      //     const j = await resp.json().catch(() => null);
+      //     const price = j?.price ?? j?.sol?.price ?? j?.data?.price ?? null;
+      //     if (typeof price === "number") {
+      //       setSolPriceUsd(price);
+      //       setPriceLoading(false);
+      //       return;
+      //     }
+      //   }
+      // } catch {
+      //   // backend failed - continue to fallback
+      // }
 
       // CoinGecko fallback
       try {
@@ -1182,38 +1175,7 @@ async function safeGetToken(getTokenFn?: typeof getToken) {
       <Navbar isDark={isDark} toggleTheme={toggleTheme} nodesOnline={nodesOnlineFallback} onGetStarted={() => window.location.assign("/get-started")} />
 
       {/* Floating music player */}
-      <div className={`fixed bottom-6 left-6 z-40 glassmorphism rounded-2xl p-4 ${isDark ? "bg-slate-800/20 border border-white/10" : "bg-white/20 border border-gray-200/20"} shadow-2xl`}>
-        <div className="flex items-center gap-3">
-          <button 
-            onClick={handlePlayToggle} 
-            className={`p-3 rounded-xl transition-all duration-300 hover:scale-110 ${isPlaying ? "bg-gradient-to-r from-purple-500 to-pink-500 text-white" : isDark ? "bg-slate-700/50 text-slate-300" : "bg-white/50 text-gray-700"}`}
-            aria-label={isPlaying ? "Pause music" : "Play music"}
-            title={isPlaying ? "Pause" : "Play"}
-          >
-            {isPlaying ? <Pause className="w-5 h-5" /> : <Play className="w-5 h-5" />}
-          </button>
-          
-          <div className="flex items-center gap-2">
-            <button onClick={handleMuteToggle} className={`p-2 rounded-lg ${isDark ? "text-slate-300 hover:text-white" : "text-gray-600 hover:text-gray-800"}`} aria-label="Toggle mute">
-              {isMuted ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
-            </button>
-            <input
-              type="range"
-              min="0"
-              max="1"
-              step="0.1"
-              value={volume}
-              onChange={(e) => handleVolumeChange(parseFloat(e.target.value))}
-              className="w-16 accent-purple-500"
-            />
-          </div>
-          
-          <div className="text-xs">
-            <div className={`${isDark ? "text-white" : "text-gray-800"} font-medium`}>Web3 Vibes</div>
-            <div className="text-gray-400">Background Music</div>
-          </div>
-        </div>
-      </div>
+      <MusicComponent isDark={isDark}/>
 
       {/* decorative components */}
       <ParticleBackground isDark={isDark} />
@@ -1248,7 +1210,7 @@ async function safeGetToken(getTokenFn?: typeof getToken) {
 
               <div className="flex flex-col sm:flex-row items-center justify-center gap-6 mb-16">
                 <button 
-                  onClick={() => window.location.assign("/tracker")} 
+                  onClick={() => window.location.assign("/get-started")} 
                   className="group relative px-8 py-4 rounded-2xl font-bold text-lg text-white bg-gradient-to-r from-purple-600 via-blue-600 to-indigo-600 shadow-2xl transition-all duration-300 hover:scale-105 hover:shadow-purple-500/25"
                 >
                   <span className="relative z-10 flex items-center gap-2">
@@ -1325,7 +1287,7 @@ async function safeGetToken(getTokenFn?: typeof getToken) {
 
                     <div className="flex items-center justify-between p-4 rounded-xl bg-gradient-to-r from-purple-500/10 to-pink-500/10">
                       <div>
-                        <div className="text-sm text-gray-400 mb-1">Active Validators</div>
+                        <div className="text-sm text-gray-400 mb-1">Total Validators</div>
                         <div className={`text-3xl font-black ${isDark ? "text-white" : "text-gray-900"}`}>
                           <AnimatedCounter target={displayValidators || backendValidatorsCount || nodesOnlineFallback} />
                         </div>
@@ -1436,10 +1398,28 @@ async function safeGetToken(getTokenFn?: typeof getToken) {
                             </div>
                           </div>
                           <div className="text-right">
+                            {/* replace your current block with this */}
                             <div className={`text-sm font-black ${isDark ? "text-white" : "text-gray-900"}`}>
-                              {((Number(v._pendingNumeric ?? v.pendingPayouts ?? 0) || 0) / 1_000_000_000).toFixed(3)} 
-                              <span className="text-purple-500 ml-1">SOL</span>
+                              {(() => {
+                                // Interpret _pendingNumeric or pendingPayouts as lamports (number | string)
+                                const lamports = Number(v._pendingNumeric ?? v.pendingPayouts ?? 0) || 0;
+                                const sol = lamports / 1_000_000_000;
+
+                                if (!isFinite(sol)) return "-";
+
+                                // Show up to 6 decimal digits so small balances are visible.
+                                // Adjust maximumFractionDigits if you want more/less precision.
+                                const formatted = new Intl.NumberFormat("en-US", { maximumFractionDigits: 6 }).format(sol);
+
+                                return (
+                                  <>
+                                    {formatted}
+                                    <span className="text-purple-500 ml-1">SOL</span>
+                                  </>
+                                );
+                                })()}
                             </div>
+
                             <div className="text-xs text-gray-400">pending rewards</div>
                           </div>
                         </div>

@@ -12,6 +12,8 @@ import GetAllValidatorController from "../controller/GetAllValidatorController.j
 import { SubscribeController } from "../controller/SubscribeController.js";
 import OnlineStatusController from "../controller/OnlineStatusController.js";
 import OfflineStatusController from "../controller/OfflineStatusController.js";
+import GetAllDbValidatorController from "../controller/GetAllDbValidatorController.js";
+import GetAllDbWebsitesController from "../controller/GetAllDbWebsitesController.js";
 
 const router = express.Router();
 
@@ -20,6 +22,8 @@ router.get("/get-website-status", authMiddleware as RequestHandler, GetWebsiteSt
 router.get("/validator-earnings", authMiddleware as RequestHandler, GetValidatorEarningsController);
 router.get("/validator",authMiddleware as RequestHandler, GetValidatorController);
 router.get("/get-all-validator",authMiddleware as RequestHandler, GetAllValidatorController);
+router.get("/get-all-db-validator", GetAllDbValidatorController);
+router.get("/get-all-db-websites", GetAllDbWebsitesController);
 
 
 router.post("/create-website", authMiddleware as RequestHandler, CreateWebsiteController);
