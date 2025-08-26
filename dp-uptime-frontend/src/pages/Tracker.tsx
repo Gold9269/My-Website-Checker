@@ -3,18 +3,15 @@ import React, { useState, useMemo, useRef, useEffect } from 'react';
 import { ChevronDown, ChevronUp, Globe, Plus, Moon, Sun, Trash2, Activity, Network } from 'lucide-react';
 import { useWebsites } from '../hooks/useWebsites';
 import axios from 'axios';
-import { SignedIn, SignedOut, SignInButton, SignUpButton, useAuth, UserButton, useUser } from '@clerk/clerk-react';
+import { SignedIn, SignedOut, SignInButton, SignUpButton, useAuth, UserButton } from '@clerk/clerk-react';
 import toast, { Toaster } from 'react-hot-toast';
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts';
 import { Connection, PublicKey, SystemProgram, Transaction, clusterApiUrl, LAMPORTS_PER_SOL } from '@solana/web3.js';
 import { useValidator } from '../context/validator';
 
-const PH_CONNECT_ALLOWED_KEY = "ph_connect_allowed"; // sessionStorage per-tab
-const PH_CONNECT_PENDING_KEY = "ph_connect_pending"; // sessionStorage - pending immediate connect
-
 // ---------- safe env helper ----------
 declare global {
-  interface Window { __ENV__?: Record<string, string>; __env__?: Record<string, string>; }
+  interface Window { __ENV__?: Record<string, string>; __env__?: Record<string, string>; solana?: any; }
 }
 
 /**
@@ -393,8 +390,6 @@ function WebsiteCard({ website, isDark }: { website: ProcessedWebsite; isDark: b
 }
 
 // ----------------- Navbar -----------------
-// Navbar.tsx
-
 function Navbar({
   isDark,
   toggleTheme,
@@ -453,113 +448,12 @@ function Navbar({
     }
   })();
 
-  // safe useUser access (Clerk)
-  const userHook = (() => {
-    try {
-      return useUser();
-    } catch {
-      return undefined as any;
-    }
-  })();
-  const isSignedIn = !!userHook?.isSignedIn;
-
-  // runtime detection for Phantom (safe)
-  const hasPhantom = typeof window !== "undefined" && !!((window as any).solana && (window as any).solana.isPhantom);
-
-  // ----------- handleConnectClick ----------
-  const handleConnectClick = async () => {
-    if (!isSignedIn) {
-      toast.error("Please sign in first.");
-      return;
-    }
-
-    const p = (window as any).solana;
-
-    if (connectWallet) {
-      // If a connectWallet prop is provided by the parent, use it.
-      // But still enforce sign-in (above).
-      try {
-        // mark user intent for this tab and mark pending so our event listener will accept the immediate connect event
-        try { sessionStorage.setItem(PH_CONNECT_ALLOWED_KEY, "1"); } catch {}
-        try { sessionStorage.setItem(PH_CONNECT_PENDING_KEY, "1"); } catch {}
-
-        await connectWallet();
-
-        // clear pending flag after a successful call
-        try { sessionStorage.removeItem(PH_CONNECT_PENDING_KEY); } catch {}
-      } catch (err) {
-        try { sessionStorage.removeItem(PH_CONNECT_PENDING_KEY); } catch {}
-        console.error("connectWallet prop failed:", err);
-        toast.error("Failed to connect wallet.");
-      }
-      return;
-    }
-
-    // fallback: direct Phantom provider connect
-    if (!p || !p.isPhantom) {
-      toast.error("Phantom not available. Install Phantom or use a supported wallet.");
-      return;
-    }
-
-    try {
-      // mark user intent for this tab and mark pending so our event listener will accept the immediate connect event
-      try { sessionStorage.setItem(PH_CONNECT_ALLOWED_KEY, "1"); } catch {}
-      try { sessionStorage.setItem(PH_CONNECT_PENDING_KEY, "1"); } catch {}
-
-      await p.connect();
-
-      // clear pending flag after success
-      try { sessionStorage.removeItem(PH_CONNECT_PENDING_KEY); } catch {}
-    } catch (err) {
-      // If connect failed, clear the pending flag so stray connect events won't be accepted
-      try { sessionStorage.removeItem(PH_CONNECT_PENDING_KEY); } catch {}
-      console.error("Phantom connect failed:", err);
-      toast.error("Failed to connect wallet.");
-    }
-  };
-
-  // ----------- handleDisconnectClick ----------
-  const handleDisconnectClick = async () => {
-    // Remove user-allowed and pending flags so subsequent (auto)connects are ignored
-    try { sessionStorage.removeItem(PH_CONNECT_ALLOWED_KEY); } catch {}
-    try { sessionStorage.removeItem(PH_CONNECT_PENDING_KEY); } catch {}
-
-    // Remove local stored validator public key (user requested)
-    try { localStorage.removeItem("validatorPublicKey"); } catch {}
-
-    // update validator context if available
-    if (typeof setValidatorInContext === "function") {
-      try { setValidatorInContext(null); } catch { /* ignore */ }
-    }
-
-    // Use provided disconnectWallet if available
-    if (disconnectWallet) {
-      try {
-        await disconnectWallet();
-      } catch (err) {
-        console.warn("disconnectWallet prop failed (non-fatal):", err);
-      }
-      return;
-    }
-
-    // Otherwise use Phantom provider disconnect (best-effort)
-    const p = (window as any).solana;
-    if (p && p.isPhantom && typeof p.disconnect === "function") {
-      try {
-        await p.disconnect();
-      } catch (err) {
-        console.warn("Phantom disconnect failed (non-fatal):", err);
-      }
-    }
-  };
-
-  // an explicit validator-disconnect-button handler (keeps your original flavor)
   const handleDisconnectValidator = async () => {
     try {
       try { localStorage.removeItem("validatorPublicKey"); } catch {}
       try {
-        if (typeof window !== "undefined" && (window as any).solana && typeof (window as any).solana.disconnect === 'function') {
-          await (window as any).solana.disconnect();
+        if (window.solana && typeof window.solana.disconnect === 'function') {
+          await window.solana.disconnect();
         }
       } catch (err) {
         console.warn("Phantom disconnect failed:", err);
@@ -629,25 +523,23 @@ function Navbar({
             {/* Wallet connect UI */}
             <div className="flex items-center gap-3">
               <div className="hidden sm:flex items-center space-x-2">
-                { hasPhantom ? (
+                { (window as any).solana && (window as any).solana.isPhantom ? (
                   walletPublicKey ? (
                     <>
                       <div className="text-sm px-3 py-1 rounded-full bg-slate-800/30 text-slate-200">
                         {walletPublicKey.slice(0,4)}...{walletPublicKey.slice(-4)}
                       </div>
                       <button
-                        onClick={handleDisconnectClick}
+                        onClick={() => disconnectWallet && disconnectWallet()}
                         className="px-3 py-1 rounded-md text-sm font-medium bg-white text-slate-700 border"
-                        type="button"
                       >
                         Disconnect
                       </button>
                     </>
                   ) : (
                     <button
-                      onClick={handleConnectClick}
+                      onClick={() => connectWallet && connectWallet()}
                       className="px-3 py-1 rounded-md text-sm font-medium bg-blue-600 text-white"
-                      type="button"
                     >
                       Connect Wallet
                     </button>
@@ -656,7 +548,6 @@ function Navbar({
                   <button
                     onClick={() => window.open('https://phantom.app/', '_blank')}
                     className="px-3 py-1 rounded-md text-sm font-medium bg-slate-100 text-slate-700"
-                    type="button"
                   >
                     Install Phantom
                   </button>
@@ -684,8 +575,6 @@ function Navbar({
     </nav>
   );
 }
-
-
 
 // ----------------- Main App page -----------------
 export default function App(): JSX.Element {
@@ -720,83 +609,17 @@ export default function App(): JSX.Element {
   const [walletPublicKey, setWalletPublicKey] = useState<string | null>(null);
   const [walletConnecting, setWalletConnecting] = useState(false);
 
-// KEY NAMES (avoid collisions)
-// ----------- effect: listen to Phantom events but DON'T auto-accept connect on load ------------
-
-useEffect(() => {
-  try {
-    const p = (window as any).solana;
-    if (!p || !p.isPhantom) return;
-
-    const handleConnectEvent = (pk: any) => {
-      try {
-        const keyStr = pk?.toString?.() ?? String(pk ?? "");
-        const allowed = sessionStorage.getItem(PH_CONNECT_ALLOWED_KEY) === "1";
-        const pending = sessionStorage.getItem(PH_CONNECT_PENDING_KEY) === "1";
-        const storedPk = ((): string => {
-          try { return localStorage.getItem("validatorPublicKey") ?? ""; } catch { return ""; }
-        })();
-
-        if (!allowed) {
-          console.debug("[ph] Ignoring phantom connect: user did not allow connect in this tab");
-          return;
-        }
-
-        // Accept only if this is the pending connect we just initiated OR the stored publicKey matches the provider's key
-        if (pending || (storedPk && storedPk === keyStr)) {
-          // accept connection
-          try { localStorage.setItem("validatorPublicKey", keyStr); } catch {}
-          try { sessionStorage.removeItem(PH_CONNECT_PENDING_KEY); } catch {}
-          // update your component state: replace with your setter if needed
-          try { (setWalletPublicKey as any)?.(keyStr); } catch (e) { console.debug("[ph] setWalletPublicKey not available"); }
-          try { (setPublicKey as any)?.(keyStr); } catch (e) { /* no-op if not present */ }
-          console.debug("[ph] Phantom connect accepted for pk:", keyStr);
-        } else {
-          // Not a pending connect and not matching stored publicKey -> ignore (prevents auto-accepts)
-          console.debug("[ph] Ignoring phantom connect: storedPk mismatch and not pending", { storedPk, keyStr, pending });
-          return;
-        }
-      } catch (err) {
-        console.warn("[ph] handleConnectEvent error:", err);
-      }
-    };
-
-    const handleDisconnectEvent = () => {
-      try {
-        // Clear public key in UI and localStorage
-        try { (setWalletPublicKey as any)?.(null); } catch {}
-        try { (setPublicKey as any)?.(null); } catch {}
-        try { localStorage.removeItem("validatorPublicKey"); } catch {}
-        // Clear any pending connect flag
-        try { sessionStorage.removeItem(PH_CONNECT_PENDING_KEY); } catch {}
-        // Also clear allowed flag if you want disconnect to require explicit connect next time:
-        // sessionStorage.removeItem(PH_CONNECT_ALLOWED_KEY);
-        console.debug("[ph] Phantom disconnected - cleaned local state");
-      } catch (err) {
-        console.warn("[ph] handleDisconnectEvent error:", err);
-      }
-    };
-
-    // attach robustly
-    p.on?.("connect", handleConnectEvent);
-    p.on?.("disconnect", handleDisconnectEvent);
-
-    // IMPORTANT: DO NOT auto-check p.isConnected or forcibly accept an existing connection here.
-    // We purposely only accept connect events when the tab has an allowed+matching-pk or pending.
-
-    return () => {
-      try { p.off?.("connect", handleConnectEvent); } catch {}
-      try { p.off?.("disconnect", handleDisconnectEvent); } catch {}
-      try { p.removeListener?.("connect", handleConnectEvent); } catch {}
-      try { p.removeListener?.("disconnect", handleDisconnectEvent); } catch {}
-    };
-  } catch (err) {
-    console.warn("[ph] phantom event effect error:", err);
-  }
-// if you want these to rebind on some deps add them; otherwise keep empty to attach once
-}, []);
-
-
+  // useEffect(() => {
+  //   try {
+  //     const p = (window as any).solana;
+  //     if (p && p.isPhantom) {
+  //       // Listen for connect/disconnect events to update UI.
+  //       p.on && p.on('connect', (pk: any) => setWalletPublicKey(pk.toString()));
+  //       p.on && p.on('disconnect', () => setWalletPublicKey(null));
+  //       // NOTE: intentionally DO NOT read p.isConnected here — we want a fresh explicit connect from user.
+  //     }
+  //   } catch {}
+  // }, []);
 
   const connectWallet = async () => {
     try {
@@ -806,12 +629,19 @@ useEffect(() => {
         toast.error('No Solana wallet available (install Phantom).');
         return;
       }
-      const resp = await provider.connect();
-      setWalletPublicKey(resp.publicKey?.toString() ?? null);
+      // Force the wallet UI to prompt / show the connect dialog even if previously trusted.
+      // `onlyIfTrusted: false` causes Phantom to always show the connection popup.
+      const resp = await provider.connect({ onlyIfTrusted: false });
+      setWalletPublicKey(resp.publicKey?.toString() ?? resp?.publicKey?.toString?.() ?? null);
       toast.success('Wallet connected');
-    } catch (err) {
+    } catch (err: any) {
       console.error('connectWallet', err);
-      toast.error('Failed to connect wallet');
+      // Phantom throws when user closes popup; show friendly message only for unexpected failures
+      if (err?.message && /rejected/i.test(err.message)) {
+        toast('Wallet connection rejected');
+      } else {
+        toast.error('Failed to connect wallet');
+      }
     } finally {
       setWalletConnecting(false);
     }

@@ -10,6 +10,7 @@ export interface IWebsite extends mongoose.Document {
   alertCooldownMinutes?: number; 
   createdAt?: Date;
   updatedAt?: Date;
+  txSignature:string;
 }
 
 export declare const Website: mongoose.Model<IWebsite>;

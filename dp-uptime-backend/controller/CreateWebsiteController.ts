@@ -1,4 +1,4 @@
-// controllers/CreateWebsiteController.ts
+// controllers/CreateWebsiteController.ts (patched)
 import type { Request, Response } from "express";
 import fetch from "node-fetch";
 import { Website as WebsiteModel } from "../model/Website.model.js";
@@ -12,11 +12,33 @@ const CLERK_SECRET_KEY = process.env.CLERK_SECRET_KEY ?? process.env.CLERK_API_K
 const CLERK_DEBUG = !!(process.env.CLERK_DEBUG && process.env.CLERK_DEBUG !== "0");
 
 // Solana settings: env overrides, fallback to given treasury public key.
+// NOTE: Accept either a named cluster ("devnet" | "mainnet-beta" | "testnet")
+// or a full RPC URL via SOLANA_RPC_URL (preferred for Alchemy/QuickNode/etc).
 const SOLANA_NETWORK = process.env.SOLANA_NETWORK || 'devnet';
+const SOLANA_RPC_URL = process.env.SOLANA_RPC_URL ?? null;
 const TREASURY_PUBKEY = process.env.TREASURY_PUBKEY || 'GDSo5N8RQoRu8asoUNEuDhXSVGYdNBafjsEJ3BoNPd7F';
 const REQUIRED_LAMPORTS = Math.round(0.1 * LAMPORTS_PER_SOL);
 
-const connection = new Connection(clusterApiUrl(SOLANA_NETWORK), 'confirmed');
+// Build an RPC URL robustly:
+let rpcUrl: string;
+if (SOLANA_RPC_URL && (SOLANA_RPC_URL.startsWith('http://') || SOLANA_RPC_URL.startsWith('https://'))) {
+  rpcUrl = SOLANA_RPC_URL;
+} else if (SOLANA_NETWORK && (SOLANA_NETWORK.startsWith('http://') || SOLANA_NETWORK.startsWith('https://'))) {
+  // Some users accidentally set SOLANA_NETWORK to the full URL. Accept it.
+  rpcUrl = SOLANA_NETWORK;
+} else {
+  // treat SOLANA_NETWORK as a named cluster; clusterApiUrl may throw for unknown names, guard it
+  try {
+    rpcUrl = clusterApiUrl(SOLANA_NETWORK as any);
+  } catch (err) {
+    if (CLERK_DEBUG) console.warn('[Solana] clusterApiUrl() failed for', SOLANA_NETWORK, err);
+    // fall back to devnet to avoid throwing unexpectedly in dev
+    rpcUrl = clusterApiUrl('devnet');
+  }
+}
+
+if (CLERK_DEBUG) console.debug('[Solana] using rpcUrl:', rpcUrl);
+const connection = new Connection(rpcUrl, 'confirmed');
 
 async function fetchClerkEmail(userId: string): Promise<string | null> {
   if (!CLERK_SECRET_KEY) {
@@ -252,18 +274,6 @@ const CreateWebsiteController = async (req: AuthenticatedRequest, res: Response)
         return;
       }
 
-      // Optional: ensure payer was a signer (uncomment to enforce)
-      // let payerIsSigner = false;
-      // for (const raw of accountKeysRaw) {
-      //   if (!raw) continue;
-      //   const pub = typeof raw === 'string' ? raw : (raw.pubkey ? String(raw.pubkey) : String(raw));
-      //   if (pub === payerPublicKey) {
-      //     if (raw.signer === true || raw.isSigner === true) payerIsSigner = true;
-      //     break;
-      //   }
-      // }
-      // if (!payerIsSigner) { res.status(400).json({ success: false, message: "Payer was not a signer of the transaction" }); return; }
-
     } catch (err) {
       console.error("Solana tx verification failed", err);
       res.status(500).json({ success: false, message: "Failed to verify Solana transaction" });
@@ -335,3 +345,14 @@ const CreateWebsiteController = async (req: AuthenticatedRequest, res: Response)
 };
 
 export default CreateWebsiteController;
+
+/*
+Sample .env entries you can add to your .env file (do NOT commit API keys):
+
+# Use a named cluster or a custom RPC URL. Prefer setting SOLANA_RPC_URL for Alchemy/QuickNode.
+SOLANA_NETWORK=devnet
+SOLANA_RPC_URL=https://solana-devnet.g.alchemy.com/v2/YOUR_ALCHEMY_KEY
+TREASURY_PUBKEY=GDSo5N8RQoRu8asoUNEuDhXSVGYdNBafjsEJ3BoNPd7F
+CLERK_SECRET_KEY=sk_live_xxx
+CLERK_DEBUG=1
+*/

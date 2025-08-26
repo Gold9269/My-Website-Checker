@@ -1,4 +1,3 @@
-// models/Website.model.ts
 import mongoose, { Schema, Document, Types } from "mongoose";
 
 export interface IWebsite extends Document {
@@ -9,6 +8,7 @@ export interface IWebsite extends Document {
   disabled: boolean;
   lastAlertAt?: Date | null;
   alertCooldownMinutes?: number; // per-website alert cooldown
+  txSignature?: string | null;
 }
 
 const WebsiteSchema: Schema<IWebsite> = new Schema(
@@ -20,6 +20,8 @@ const WebsiteSchema: Schema<IWebsite> = new Schema(
     disabled: { type: Boolean, default: false },
     lastAlertAt: { type: Date, default: null },
     alertCooldownMinutes: { type: Number, default: 15 }, // default: 15 minutes
+    // store the txSignature used to enable/insert the site (helps prevent replays)
+    txSignature: { type: String, default: null, index: { unique: true, sparse: true } },
   },
   { timestamps: true }
 );

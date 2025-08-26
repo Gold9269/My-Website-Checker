@@ -47,7 +47,7 @@ import { useWebsites } from "../hooks/useWebsites";
 import { useValidator } from "../context/validator";
 import { useUI } from "../context/ui";
 import axios from "axios";
-import MusicComponent from "../components/MusicComponent";
+//import MusicComponent from "../components/MusicComponent";
 
 const BACKEND = import.meta.env.VITE_API_BASE ?? "http://localhost:5000";
 
@@ -429,12 +429,12 @@ export default function Dashboard(): JSX.Element {
   const { isDark, toggleTheme } = useTheme();
 
   const [stats, setStats] = useState<StatsData>({
-    totalSites: 12847,
+    totalSites: 0,
     averageUptime: 99.97,
-    totalIncidents: 3,
+    totalIncidents: 0,
     averageResponseTime: 142,
-    activeUsers: 2489,
-    nodesOnline: 156,
+    activeUsers: 0,
+    nodesOnline: 0,
   });
 
   const { websites, loading: loadingWebsites, error: websitesError } = useWebsites();
@@ -464,17 +464,25 @@ export default function Dashboard(): JSX.Element {
       return undefined as any;
     }
   })();
-  const getToken = auth?.getToken;
+
+  // safely type getToken (may be undefined)
+  const getToken = (auth?.getToken as (() => Promise<string | null>) | undefined) ?? undefined;
 
   const [currentTime, setCurrentTime] = useState(new Date());
 
   // animated counts + polling
+  // --- new/updated state hooks ---
   const [backendWebsitesCount, setBackendWebsitesCount] = useState<number | null>(null);
-  const [backendValidatorsCount, setBackendValidatorsCount] = useState<number | null>(null);
-  const [displayWebsites, setDisplayWebsites] = useState<number>(0);
-  const [displayValidators, setDisplayValidators] = useState<number>(0);
+  const [backendValidatorsCount, setBackendValidatorsCount] = useState<number | null>(null); // total (DB)
+  const [backendActiveValidatorsCount, setBackendActiveValidatorsCount] = useState<number | null>(null); // live/active
+
+  const [displayWebsites, setDisplayWebsites] = useState<number | null>(null);
+  const [displayValidators, setDisplayValidators] = useState<number | null>(null); // total (animated)
+  const [displayActiveValidators, setDisplayActiveValidators] = useState<number | null>(null); // active (animated)
+
   const [fetchingWebsites, setFetchingWebsites] = useState(false);
   const [fetchingValidators, setFetchingValidators] = useState(false);
+  const [fetchingActiveValidators, setFetchingActiveValidators] = useState(false);
 
   // top validators
   const [topValidators, setTopValidators] = useState<any[]>([]);
@@ -487,18 +495,6 @@ export default function Dashboard(): JSX.Element {
   // newsletter
   const [newsletterEmail, setNewsletterEmail] = useState("");
   const [submittingNewsletter, setSubmittingNewsletter] = useState(false);
-
-  // Web3 background music (robust approach: HTMLAudio first, then WebAudio connect)
-  const MUSIC_URL = "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3";
-  const audioElemRef = useRef<HTMLAudioElement | null>(null);
-  const audioCtxRef = useRef<AudioContext | null>(null);
-  const mediaSourceRef = useRef<MediaElementAudioSourceNode | null>(null);
-  const gainRef = useRef<GainNode | null>(null);
-
-  const [isPlaying, setIsPlaying] = useState(false);
-  const [isMuted, setIsMuted] = useState(false);
-  const [volume, setVolume] = useState(0.5);
-  const audioToastLockRef = useRef(false);
 
   // reveal-on-scroll
   useEffect(() => {
@@ -537,6 +533,7 @@ export default function Dashboard(): JSX.Element {
   }, []);
 
   // fetch helpers (unchanged)
+  // --- unchanged: fetchWebsitesOnce (keeps same) ---
   async function fetchWebsitesOnce(signal?: AbortSignal) {
     setFetchingWebsites(true);
     try {
@@ -560,6 +557,7 @@ export default function Dashboard(): JSX.Element {
     }
   }
 
+  // --- total validators (DB) ---
   async function fetchValidatorsOnce(signal?: AbortSignal) {
     setFetchingValidators(true);
     try {
@@ -583,7 +581,31 @@ export default function Dashboard(): JSX.Element {
     }
   }
 
-  // polling websites
+  // --- active / live validators (uses live endpoint) ---
+  async function fetchActiveValidators(signal?: AbortSignal) {
+    setFetchingActiveValidators(true);
+    try {
+      let token: string | null = null;
+      try {
+        if (typeof getToken === "function") token = await getToken();
+      } catch {}
+      const headers: Record<string, string> = { Accept: "application/json" };
+      if (token) headers.Authorization = `Bearer ${token}`;
+
+      const r = await fetch(`${BACKEND}/api/v1/get-all-validator`, { credentials: "include", headers, signal });
+      if (!r.ok) return null;
+      const j = await r.json().catch(() => null);
+      const c = parseCountFromJson(j);
+      return c;
+    } catch (err) {
+      if ((err as any)?.name !== "AbortError") console.error("fetchActiveValidators error", err);
+      return null;
+    } finally {
+      setFetchingActiveValidators(false);
+    }
+  }
+
+  // --- polling websites (unchanged logic, just use nullish for display state) ---
   useEffect(() => {
     let mounted = true;
     let controller: AbortController | null = null;
@@ -604,14 +626,12 @@ export default function Dashboard(): JSX.Element {
     const id = window.setInterval(() => void run(), POLL);
     return () => {
       mounted = false;
-      try {
-        controller?.abort();
-      } catch {}
+      try { controller?.abort(); } catch {}
       clearInterval(id);
     };
   }, [getToken]);
 
-  // polling validators
+  // --- polling total validators (DB) ---
   useEffect(() => {
     let mounted = true;
     let controller: AbortController | null = null;
@@ -620,7 +640,7 @@ export default function Dashboard(): JSX.Element {
     const run = async () => {
       controller?.abort();
       controller = new AbortController();
-      const count = await fetchValidatorsOnce(controller.signal);
+      const count = await fetchValidatorsOnce(controller.signal); // <-- total DB
       if (mounted && typeof count === "number") {
         setBackendValidatorsCount(count);
         setDisplayValidators(0);
@@ -632,51 +652,25 @@ export default function Dashboard(): JSX.Element {
     const id = window.setInterval(() => void run(), POLL);
     return () => {
       mounted = false;
-      try {
-        controller?.abort();
-      } catch {}
+      try { controller?.abort(); } catch {}
       clearInterval(id);
     };
   }, [getToken]);
 
-  // top validators
+  // --- polling active validators (live) ---
   useEffect(() => {
     let mounted = true;
     let controller: AbortController | null = null;
-    const POLL = 15_000;
+    const POLL = 10_000;
 
     const run = async () => {
       controller?.abort();
       controller = new AbortController();
-      setFetchingTopValidators(true);
-      try {
-        let token: string | null = null;
-        try {
-          if (typeof getToken === "function") token = await getToken();
-        } catch {}
-        const headers: Record<string, string> = { Accept: "application/json" };
-        if (token) headers.Authorization = `Bearer ${token}`;
-
-        const r = await fetch(`${BACKEND}/api/v1/get-all-db-validator`, {
-          credentials: "include",
-          headers,
-          signal: controller.signal,
-        });
-        if (!r.ok) return;
-        const j = await r.json().catch(() => null);
-        const arr = Array.isArray(j) ? j : Array.isArray(j?.validators) ? j.validators : Array.isArray(j?.data) ? j.data : [];
-        console.log("arr is ..................",arr);
-        if (!Array.isArray(arr)) return;
-        const normalized = arr
-          .map((v: any) => ({ ...v, _pendingNumeric: Number(v.pendingPayouts ?? 0) }))
-          .sort((a: any, b: any) => (b._pendingNumeric || 0) - (a._pendingNumeric || 0))
-          .slice(0, 8);
-          console.log("normalized is ..................",normalized);
-        if (mounted) setTopValidators(normalized);
-      } catch (err) {
-        if ((err as any)?.name !== "AbortError") console.error("fetchTopValidators error", err);
-      } finally {
-        if (mounted) setFetchingTopValidators(false);
+      const count = await fetchActiveValidators(controller.signal); // <-- live/active endpoint
+      if (mounted && typeof count === "number") {
+        setBackendActiveValidatorsCount(count);
+        setDisplayActiveValidators(0);
+        setTimeout(() => mounted && setDisplayActiveValidators(count), 60);
       }
     };
 
@@ -684,32 +678,96 @@ export default function Dashboard(): JSX.Element {
     const id = window.setInterval(() => void run(), POLL);
     return () => {
       mounted = false;
-      try {
-        controller?.abort();
-      } catch {}
+      try { controller?.abort(); } catch {}
       clearInterval(id);
     };
   }, [getToken]);
+
+  // helper to parse array from common shapes
+  function parseValidatorsFromJson(j: any): any[] {
+    if (!j) return [];
+    if (Array.isArray(j)) return j;
+    if (Array.isArray(j?.data)) return j.data;
+    if (Array.isArray(j?.validators)) return j.validators;
+    if (Array.isArray(j?.items)) return j.items;
+    // try to find any array inside object
+    const arr = Object.values(j).find((v) => Array.isArray(v));
+    return Array.isArray(arr) ? arr : [];
+  }
+
+  async function fetchTopValidatorsOnce(signal?: AbortSignal) {
+    setFetchingTopValidators(true);
+    try {
+      let token: string | null = null;
+      try { if (typeof getToken === "function") token = await getToken(); } catch (e) { console.warn("getToken failed", e); }
+
+      const headers: Record<string, string> = { Accept: "application/json" };
+      if (token) headers.Authorization = `Bearer ${token}`;
+
+      // <-- update the path if your backend exposes a different top validators route
+      const url = `${BACKEND}/api/v1/get-top-validators`;
+      console.debug("[fetchTopValidatorsOnce] requesting", url);
+
+      const r = await fetch(url, { credentials: "include", headers, signal });
+      console.debug("[fetchTopValidatorsOnce] response status", r.status);
+
+      if (!r.ok) {
+        // log body for easier debugging
+        const text = await r.text().catch(() => "<body-parse-error>");
+        console.error("[fetchTopValidatorsOnce] non-ok response", r.status, text);
+        return null;
+      }
+
+      const j = await r.json().catch((err) => {
+        console.error("[fetchTopValidatorsOnce] json parse failed", err);
+        return null;
+      });
+
+      console.debug("[fetchTopValidatorsOnce] json", j);
+      const arr = parseValidatorsFromJson(j);
+      console.debug("[fetchTopValidatorsOnce] parsed array length", arr.length);
+      // set state (don't mutate upstream)
+      setTopValidators(arr);
+      return arr.length;
+    } catch (err) {
+      if ((err as any)?.name === "AbortError") {
+        console.debug("[fetchTopValidatorsOnce] aborted");
+      } else {
+        console.error("[fetchTopValidatorsOnce] error", err);
+      }
+      return null;
+    } finally {
+      setFetchingTopValidators(false);
+    }
+  }
+
+  // polling effect (10s like others)
+  useEffect(() => {
+    let mounted = true;
+    let controller: AbortController | null = null;
+    const POLL = 10_000;
+
+    const run = async () => {
+      controller?.abort();
+      controller = new AbortController();
+      await fetchTopValidatorsOnce(controller.signal);
+      // optionally: if you want to animate counts you can set display states here
+      if (!mounted) controller?.abort();
+    };
+
+    void run();
+    const id = window.setInterval(() => void run(), POLL);
+    return () => {
+      mounted = false;
+      try { controller?.abort(); } catch {}
+      clearInterval(id);
+    };
+  }, [getToken]); // depends on token provider
 
   // price fetch: backend then CoinGecko fallback
   async function fetchSolPriceOnce() {
     setPriceLoading(true);
     try {
-      // try {
-      //   const resp = await fetch(`${BACKEND}/api/v1/price/sol`, { credentials: "include", headers: { Accept: "application/json" } });
-      //   if (resp.ok) {
-      //     const j = await resp.json().catch(() => null);
-      //     const price = j?.price ?? j?.sol?.price ?? j?.data?.price ?? null;
-      //     if (typeof price === "number") {
-      //       setSolPriceUsd(price);
-      //       setPriceLoading(false);
-      //       return;
-      //     }
-      //   }
-      // } catch {
-      //   // backend failed - continue to fallback
-      // }
-
       // CoinGecko fallback
       try {
         const cg = await fetch("https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd", { headers: { Accept: "application/json" } });
@@ -738,384 +796,44 @@ export default function Dashboard(): JSX.Element {
     return () => clearInterval(id);
   }, []);
 
-  // --- AUDIO: prefer HTMLAudioElement playback started from user gesture
-const ensureAudioElem = (): HTMLAudioElement => {
-  if (audioElemRef.current) return audioElemRef.current;
-
-  const a = document.createElement("audio");
-  a.loop = true;
-  a.preload = "auto";
-  a.style.display = "none";
-
-  // Try to set crossorigin first (needed to use WebAudio graph on cross-origin media)
-  try {
-    a.crossOrigin = "anonymous";
-    a.dataset.cross = "anonymous";
-  } catch (e) {
-    console.warn("Couldn't set crossOrigin on audio element:", e);
+  async function safeGetToken(getTokenFn?: (() => Promise<string | null>) | undefined) {
+    try {
+      if (!getTokenFn) return null;
+      const t = await getTokenFn();
+      return t ?? null;
+    } catch {
+      return null;
+    }
   }
 
-  // Append before setting src to ensure event handlers are ready when loading begins
-  document.body.appendChild(a);
-  audioElemRef.current = a;
-
-  // helper to set src + load
-  const loadSrc = (src: string, withCross = true) => {
-    try {
-      if (withCross) {
-        try {
-          a.crossOrigin = "anonymous";
-          a.dataset.cross = "anonymous";
-        } catch {}
-      } else {
-        try {
-          a.removeAttribute("crossorigin");
-          a.dataset.cross = "nocors";
-        } catch {}
-      }
-      // Only change src if different to avoid repeated reloads
-      if (a.src !== src) a.src = src;
-      // attempt to load
-      try { a.load(); } catch (e) { console.warn("audio.load() threw:", e); }
-    } catch (e) {
-      console.warn("loadSrc error:", e);
-    }
-  };
-
-  // set initial source (try with crossorigin first)
-  loadSrc(MUSIC_URL, true);
-
-  // event handlers to keep state and debugging info
-  a.addEventListener("play", () => setIsPlaying(true));
-  a.addEventListener("pause", () => setIsPlaying(false));
-
-  a.addEventListener("canplay", () => {
-    console.debug("Audio canplay — ready to play. currentSrc:", a.currentSrc, "crossOrigin:", a.getAttribute("crossorigin"));
-  });
-
-  a.addEventListener("loadedmetadata", () => {
-    console.debug("Audio loadedmetadata:", { duration: a.duration, src: a.currentSrc, crossOrigin: a.getAttribute("crossorigin") });
-  });
-
-  a.addEventListener("stalled", () => {
-    console.warn("Audio stalled while fetching data. Check network/CORS for:", a.currentSrc);
-  });
-
-  // Error event: log, show toast, and try a fallback without crossorigin (only once)
-  a.addEventListener("error", (ev) => {
-    console.error("HTMLAudio element error", ev, audioElemRef.current?.error, {
-      src: a.currentSrc,
-      crossOrigin: a.getAttribute("crossorigin"),
-      dataset: { ...a.dataset },
-    });
-
-    // If a CORS-related failure happened while crossorigin was set, retry once without crossorigin.
-    const alreadyRetried = a.getAttribute("data-retried-nocors") === "1";
-    const hadCross = a.getAttribute("crossorigin") !== null;
-
-    // Many CORS problems manifest as an error here but audio.play() may still succeed - retry without crossorigin to ensure WebAudio compatibility.
-    if (!alreadyRetried && hadCross) {
-      console.warn("Retrying audio load without 'crossorigin' attribute (attempt to fix CORS-related WebAudio errors).");
-      try {
-        a.setAttribute("data-retried-nocors", "1");
-        a.removeAttribute("crossorigin");
-      } catch (e) {
-        console.warn("Failed to remove crossorigin attribute:", e);
-      }
-      // reload without crossorigin
-      loadSrc(MUSIC_URL, false);
-    }
-    console.log("audioToastLockRef is .............",audioToastLockRef);
-
-    if (!audioToastLockRef.current) {
-      audioToastLockRef.current = true;
-      toast.error("Audio element error. Check console/network/CORS.");
-    }
-  });
-
-  // network troubleshooting helper (fires on fetch events)
-  a.addEventListener("waiting", () => {
-    console.debug("Audio waiting for more data; network might be slow or blocked. src:", a.currentSrc);
-  });
-
-  return a;
-};
-
-
-  const createAudioContextIfNeeded = async () => {
-    if (!audioCtxRef.current) {
-      const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
-      audioCtxRef.current = ctx;
-    }
-    if (!gainRef.current && audioCtxRef.current) {
-      const gain = audioCtxRef.current.createGain();
-      gain.gain.value = isMuted ? 0 : volume;
-      gain.connect(audioCtxRef.current.destination);
-      gainRef.current = gain;
-    }
-    return audioCtxRef.current;
-  };
-
-  const connectMediaElementToAudioCtx = async (audioEl: HTMLAudioElement) => {
-  try {
-    if (!audioCtxRef.current) await createAudioContextIfNeeded();
-    if (!audioCtxRef.current) return;
-
-    // already wired
-    if (mediaSourceRef.current) return;
-
-    // If the audio is cross-origin (different origin from the page),
-    // creating a MediaElementSource will taint the audio graph and produce zeroes.
-    // Detect that and skip createMediaElementSource in that case.
-    try {
-      const src = audioEl.currentSrc || audioEl.src;
-      if (src) {
-        const audioOrigin = new URL(src).origin;
-        const pageOrigin = window.location.origin;
-        if (audioOrigin !== pageOrigin) {
-          console.warn("Cross-origin audio detected; skipping createMediaElementSource to avoid CORS tainting.", { src });
-          // Ensure we still have a gain node connected to destination so the rest of the code
-          // can reference gainRef (though it won't control the audio element unless mediaSourceRef exists).
-          if (!gainRef.current && audioCtxRef.current) {
-            const g = audioCtxRef.current.createGain();
-            g.gain.value = isMuted ? 0 : volume;
-            g.connect(audioCtxRef.current.destination);
-            gainRef.current = g;
-          }
-          // Use HTMLAudio element's volume as fallback for volume control
-          audioEl.volume = isMuted ? 0 : volume;
-          audioEl.muted = isMuted;
-          return;
-        }
-      }
-    } catch (err) {
-      // If URL parsing fails, continue and attempt to create the source (will be caught below)
-      console.warn("Could not determine audio origin; attempting to create MediaElementSource:", err);
-    }
-
-    // Best-effort: try to create media element source; if it throws, fall back to element volume
-    try {
-      const srcNode = audioCtxRef.current.createMediaElementSource(audioEl);
-      mediaSourceRef.current = srcNode;
-
-      if (!gainRef.current) {
-        const g = audioCtxRef.current.createGain();
-        g.gain.value = isMuted ? 0 : volume;
-        g.connect(audioCtxRef.current.destination);
-        gainRef.current = g;
-      }
-
-      mediaSourceRef.current.connect(gainRef.current);
-    } catch (err) {
-      console.warn("createMediaElementSource failed — falling back to HTMLAudio volume control. Error:", err);
-      // fall back: ensure element volume matches app state
-      try {
-        audioEl.volume = isMuted ? 0 : volume;
-        audioEl.muted = isMuted;
-      } catch (e) {
-        console.warn("Failed to set audio element volume/muted fallback:", e);
-      }
-    }
-  } catch (err) {
-    console.warn("connectMediaElementToAudioCtx error (non-fatal):", err);
-  }
-};
-
-
-const handlePlayToggle = async () => {
-  try {
-    const audioEl = ensureAudioElem();
-
-    // If currently playing -> pause
-    if (!audioEl.paused && !audioEl.ended) {
-      audioEl.pause();
-      setIsPlaying(false);
+  async function handleSubscribe(e?: React.FormEvent) {
+    if (e) e.preventDefault();
+    if (!newsletterEmail || !newsletterEmail.includes("@")) {
+      toast.error("Please enter a valid email.");
       return;
     }
-
-    // Try to play immediately on the user click (do this before awaits)
-    let played = false;
+    setSubmittingNewsletter(true);
     try {
-      const playPromise = audioEl.play();
-      if (playPromise && typeof (playPromise as any).then === "function") {
-        await playPromise;
+      const token = getToken ? await safeGetToken(getToken) : null;
+      const headers = token ? { Authorization: `Bearer ${token}` } : {};
+      const resp = await axios.post(`${BACKEND}/api/v1/subscribe`, { email: newsletterEmail }, { headers, withCredentials: true });
+      if (resp?.data?.ok) {
+        toast.success("Subscribed! Check your inbox for a confirmation.");
+        setNewsletterEmail("");
+      } else {
+        toast.error("Subscription failed.");
       }
-      played = !audioEl.paused && !audioEl.ended;
-    } catch (err) {
-      console.warn("initial play() blocked or failed:", err);
-    }
-
-    // If normal play was blocked, try a muted-play fallback (user initiated click)
-    if (!played) {
-      try {
-        audioEl.muted = true;
-        await audioEl.play();
-        // small delay, then unmute (user already clicked)
-        setTimeout(() => {
-          try {
-            audioEl.muted = false;
-            audioEl.volume = isMuted ? 0 : volume;
-            if (gainRef.current) gainRef.current.gain.value = isMuted ? 0 : volume;
-          } catch (e) { console.warn("unmute fallback failed:", e); }
-        }, 250);
-      } catch (err2) {
-        console.error("muted fallback also failed:", err2);
-        throw err2;
-      }
-    }
-
-    // Create/resume AudioContext and connect (best-effort)
-    try {
-      await createAudioContextIfNeeded();
-      if (audioCtxRef.current && audioCtxRef.current.state === "suspended") {
-        try { await audioCtxRef.current.resume(); } catch (e) { console.warn("resume failed:", e); }
-      }
-      await connectMediaElementToAudioCtx(audioEl);
-      if (gainRef.current) gainRef.current.gain.value = isMuted ? 0 : volume;
-      audioEl.volume = isMuted ? 0 : volume;
-      audioEl.muted = isMuted;
-    } catch (e) {
-      console.warn("post-play audio context/connect failed (non-fatal):", e);
-    }
-
-    setIsPlaying(!audioEl.paused && !audioEl.ended);
-  } catch (e: any) {
-    console.error("handlePlayToggle error:", e);
-    const name = e?.name ?? "";
-    if (name === "NotAllowedError" || name === "NotSupportedError") {
-      toast.error("Browser blocked playback. Try clicking the play button again or disable Brave Shields.");
-    } else {
-      toast.error("Audio couldn't start — check console for details.");
+    } catch (err: any) {
+      console.error("subscribe err:", err);
+      toast.error(err?.response?.data?.error ?? "Failed to subscribe.");
+    } finally {
+      setSubmittingNewsletter(false);
     }
   }
-};
-
-
-  const handleMuteToggle = async () => {
-    try {
-      const newMuted = !isMuted;
-      setIsMuted(newMuted);
-      const audioEl = audioElemRef.current;
-      if (gainRef.current) {
-        gainRef.current.gain.value = newMuted ? 0 : volume;
-      }
-      if (audioEl) {
-        try {
-          audioEl.muted = newMuted;
-          audioEl.volume = newMuted ? 0 : volume;
-          // If unmuting and audio isn't playing, attempt to play (user gesture required — but unmute clicked by user)
-          if (!newMuted && (audioEl.paused || audioEl.ended)) {
-            try {
-              await audioEl.play();
-              setIsPlaying(true);
-            } catch (err) {
-              // If this fails, ask user to explicitly press play
-              console.warn("unmute attempted play failed:", err);
-              toast("Audio unmuted — press play to start.", { duration: 3500 });
-            }
-          }
-        } catch (err) {
-          console.warn("failed to update audioEl mute/volume:", err);
-        }
-      }
-    } catch (err) {
-      console.error("handleMuteToggle failed:", err);
-    }
-  };
-
-  const handleVolumeChange = (newVolume: number) => {
-    setVolume(newVolume);
-    try {
-      if (gainRef.current) gainRef.current.gain.value = isMuted ? 0 : newVolume;
-      if (audioElemRef.current) audioElemRef.current.volume = newVolume;
-    } catch (err) {
-      console.warn("handleVolumeChange warn:", err);
-    }
-  };
-
-  // Pause & cleanup helper
-  const stopPlayback = () => {
-    try {
-      if (audioElemRef.current && !audioElemRef.current.paused) {
-        audioElemRef.current.pause();
-      }
-      setIsPlaying(false);
-    } catch (err) {
-      console.warn("stopPlayback failed:", err);
-    }
-  };
-
-  useEffect(() => {
-    return () => {
-      try {
-        stopPlayback();
-        if (mediaSourceRef.current) {
-          try {
-            mediaSourceRef.current.disconnect();
-          } catch {}
-          mediaSourceRef.current = null;
-        }
-        if (gainRef.current) {
-          try {
-            gainRef.current.disconnect();
-          } catch {}
-          gainRef.current = null;
-        }
-        if (audioCtxRef.current) {
-          try {
-            audioCtxRef.current.close();
-          } catch {}
-          audioCtxRef.current = null;
-        }
-        if (audioElemRef.current) {
-          try {
-            audioElemRef.current.pause();
-            if (audioElemRef.current.parentElement) audioElemRef.current.parentElement.removeChild(audioElemRef.current);
-          } catch {}
-          audioElemRef.current = null;
-        }
-      } catch {}
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-  
-async function safeGetToken(getTokenFn?: typeof getToken) {
-  try {
-    if (!getTokenFn) return null;
-    const t = await getTokenFn();
-    return t ?? null;
-  } catch {
-    return null;
-  }
-}
- async function handleSubscribe(e?: React.FormEvent) {
-  if (e) e.preventDefault();
-  if (!newsletterEmail || !newsletterEmail.includes("@")) {
-    toast.error("Please enter a valid email.");
-    return;
-  }
-  setSubmittingNewsletter(true);
-  try {
-    const token = getToken ? await safeGetToken(getToken) : null;
-    const headers = token ? { Authorization: `Bearer ${token}` } : {};
-    const resp = await axios.post(`${BACKEND}/api/v1/subscribe`, { email: newsletterEmail }, { headers, withCredentials: true });
-    if (resp?.data?.ok) {
-      toast.success("Subscribed! Check your inbox for a confirmation.");
-      setNewsletterEmail("");
-    } else {
-      toast.error("Subscription failed.");
-    }
-  } catch (err: any) {
-    console.error("subscribe err:", err);
-    toast.error(err?.response?.data?.error ?? "Failed to subscribe.");
-  } finally {
-    setSubmittingNewsletter(false);
-  }
-}
 
   // CSS for reveal animations + improved glass styles for metrics section
   useEffect(() => {
-    const style = document.createElement('style');
+    const style = document.createElement("style");
     style.id = "dashboard-glass-styles";
     style.textContent = `
       /* reveal */
@@ -1152,30 +870,30 @@ async function safeGetToken(getTokenFn?: typeof getToken) {
     `;
     document.head.appendChild(style);
     return () => {
-      const el = document.getElementById('dashboard-glass-styles');
+      const el = document.getElementById("dashboard-glass-styles");
       if (el) el.remove();
     };
   }, []);
 
   return (
     <div className={`min-h-screen transition-all duration-1000 ${isDark ? "bg-gradient-to-br from-[#0a0118] via-[#1a0b2e] to-[#2d1b69]" : "bg-gradient-to-br from-blue-50 via-indigo-50 to-purple-50"}`}>
-      <Toaster 
+      <Toaster
         position="top-right"
         toastOptions={{
           duration: 4000,
           style: {
-            background: isDark ? '#1e293b' : '#ffffff',
-            color: isDark ? '#f1f5f9' : '#0f172a',
-            border: `1px solid ${isDark ? '#475569' : '#e2e8f0'}`,
-            borderRadius: '12px',
-            boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.25)',
+            background: isDark ? "#1e293b" : "#ffffff",
+            color: isDark ? "#f1f5f9" : "#0f172a",
+            border: `1px solid ${isDark ? "#475569" : "#e2e8f0"}`,
+            borderRadius: "12px",
+            boxShadow: "0 25px 50px -12px rgba(0, 0, 0, 0.25)",
           },
         }}
       />
       <Navbar isDark={isDark} toggleTheme={toggleTheme} nodesOnline={nodesOnlineFallback} onGetStarted={() => window.location.assign("/get-started")} />
 
       {/* Floating music player */}
-      <MusicComponent isDark={isDark}/>
+      {/* <MusicComponent isDark={isDark}/> */}
 
       {/* decorative components */}
       <ParticleBackground isDark={isDark} />
@@ -1204,13 +922,13 @@ async function safeGetToken(getTokenFn?: typeof getToken) {
               </h1>
 
               <p className={`max-w-4xl mx-auto text-xl md:text-2xl ${isDark ? "text-gray-300" : "text-gray-600"} mb-12 leading-relaxed`}>
-                DecentWatch provides global, blockchain-attested monitoring with an open validator network, 
+                DecentWatch provides global, blockchain-attested monitoring with an open validator network,
                 enterprise alerting, and comprehensive reliability reports for the decentralized web.
               </p>
 
               <div className="flex flex-col sm:flex-row items-center justify-center gap-6 mb-16">
-                <button 
-                  onClick={() => window.location.assign("/get-started")} 
+                <button
+                  onClick={() => window.location.assign("/get-started")}
                   className="group relative px-8 py-4 rounded-2xl font-bold text-lg text-white bg-gradient-to-r from-purple-600 via-blue-600 to-indigo-600 shadow-2xl transition-all duration-300 hover:scale-105 hover:shadow-purple-500/25"
                 >
                   <span className="relative z-10 flex items-center gap-2">
@@ -1220,8 +938,8 @@ async function safeGetToken(getTokenFn?: typeof getToken) {
                   <div className="absolute inset-0 rounded-2xl bg-gradient-to-r from-purple-600 to-pink-600 opacity-0 group-hover:opacity-100 transition-opacity duration-300" />
                 </button>
 
-                <button 
-                  onClick={() => window.location.assign("/docs")} 
+                <button
+                  onClick={() => window.location.assign("/docs")}
                   className={`px-8 py-4 rounded-2xl font-semibold text-lg border-2 transition-all duration-300 hover:scale-105 ${isDark ? "border-white/20 text-white hover:bg-white/5" : "border-gray-300 text-gray-800 hover:bg-gray-50"}`}
                 >
                   <span className="flex items-center gap-2">
@@ -1236,7 +954,7 @@ async function safeGetToken(getTokenFn?: typeof getToken) {
                 <div className="flex items-center gap-2">
                   <div className="w-3 h-3 bg-emerald-400 rounded-full animate-pulse" />
                   <span className={isDark ? "text-gray-300" : "text-gray-600"}>
-                    <AnimatedCounter target={displayWebsites || stats.totalSites} /> sites monitored
+                    <AnimatedCounter target={displayWebsites ?? backendWebsitesCount ?? stats.totalSites} /> sites monitored
                   </span>
                 </div>
                 <div className="flex items-center gap-2">
@@ -1248,7 +966,7 @@ async function safeGetToken(getTokenFn?: typeof getToken) {
                 <div className="flex items-center gap-2">
                   <div className="w-3 h-3 bg-purple-400 rounded-full animate-pulse" />
                   <span className={isDark ? "text-gray-300" : "text-gray-600"}>
-                    <AnimatedCounter target={displayValidators || nodesOnlineFallback} /> validators active
+                    <AnimatedCounter target={displayActiveValidators ?? backendActiveValidatorsCount ?? nodesOnlineFallback} /> validators active
                   </span>
                 </div>
               </div>
@@ -1260,7 +978,7 @@ async function safeGetToken(getTokenFn?: typeof getToken) {
         <section className="relative px-6 lg:px-8 pb-24" data-reveal>
           <div className="max-w-7xl mx-auto">
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-              
+
               {/* Network Overview Card */}
               <div className="gradient-border animate-float">
                 <div className={`rounded-2xl p-8 h-full glassmorphism ${isDark ? "bg-slate-900/40" : "bg-white/60"} shadow-2xl`}>
@@ -1273,15 +991,16 @@ async function safeGetToken(getTokenFn?: typeof getToken) {
                       <p className="text-sm text-gray-400">Real-time monitoring stats</p>
                     </div>
                   </div>
-                  
+
                   <div className="space-y-6">
                     <div className="flex items-center justify-between p-4 rounded-xl bg-gradient-to-r from-blue-500/10 to-purple-500/10">
                       <div>
                         <div className="text-sm text-gray-400 mb-1">Websites Monitored</div>
                         <div className={`text-3xl font-black ${isDark ? "text-white" : "text-gray-900"}`}>
-                          <AnimatedCounter target={displayWebsites || backendWebsitesCount || websites?.length || stats.totalSites} />
+                          <AnimatedCounter target={displayWebsites ?? backendWebsitesCount ?? websites?.length ?? stats.totalSites} />
                         </div>
                       </div>
+
                       <TrendingUp className={`w-8 h-8 ${isDark ? "text-emerald-400" : "text-emerald-600"}`} />
                     </div>
 
@@ -1289,7 +1008,7 @@ async function safeGetToken(getTokenFn?: typeof getToken) {
                       <div>
                         <div className="text-sm text-gray-400 mb-1">Total Validators</div>
                         <div className={`text-3xl font-black ${isDark ? "text-white" : "text-gray-900"}`}>
-                          <AnimatedCounter target={displayValidators || backendValidatorsCount || nodesOnlineFallback} />
+                          <AnimatedCounter target={displayValidators ?? backendValidatorsCount ?? nodesOnlineFallback} />
                         </div>
                       </div>
                       <Server className={`w-8 h-8 ${isDark ? "text-cyan-400" : "text-cyan-600"}`} />
@@ -1334,17 +1053,17 @@ async function safeGetToken(getTokenFn?: typeof getToken) {
                     <div className="text-sm text-gray-400 mb-6">
                       {priceLoading ? "Updating price..." : "Updated every minute"}
                     </div>
-                    
+
                     <div className="flex gap-3">
-                      <button 
-                        onClick={() => void fetchSolPriceOnce()} 
+                      <button
+                        onClick={() => void fetchSolPriceOnce()}
                         disabled={priceLoading}
                         className={`flex-1 px-4 py-3 rounded-xl font-semibold transition-all duration-300 hover:scale-105 ${isDark ? "bg-slate-700/50 text-white hover:bg-slate-600/50" : "bg-blue-100 text-blue-700 hover:bg-blue-200"} disabled:opacity-50`}
                       >
                         Refresh
                       </button>
-                      <button 
-                        onClick={() => window.open("https://www.coingecko.com/en/coins/solana", "_blank")} 
+                      <button
+                        onClick={() => window.open("https://www.coingecko.com/en/coins/solana", "_blank")}
                         className={`flex-1 px-4 py-3 rounded-xl font-semibold border-2 transition-all duration-300 hover:scale-105 ${isDark ? "border-white/20 text-white hover:bg-white/5" : "border-gray-200 text-gray-700 hover:bg-gray-50"}`}
                       >
                         CoinGecko
@@ -1379,21 +1098,21 @@ async function safeGetToken(getTokenFn?: typeof getToken) {
                         <div className="text-sm text-gray-400">No validators data yet</div>
                       </div>
                     ) : (
-                      topValidators.map((v, i) => (
-                        <div 
-                          key={v.publicKey ?? i} 
+                      topValidators.map((v: any, i: number) => (
+                        <div
+                          key={v?.publicKey ?? i}
                           className={`flex items-center justify-between p-4 rounded-xl transition-all duration-300 hover:scale-105 ${isDark ? "bg-white/5 hover:bg-white/10" : "bg-gray-50 hover:bg-gray-100"}`}
                         >
                           <div className="flex items-center gap-3">
                             <div className={`w-12 h-12 rounded-xl flex items-center justify-center font-bold text-white bg-gradient-to-br ${i % 3 === 0 ? "from-purple-500 to-pink-500" : i % 3 === 1 ? "from-blue-500 to-cyan-500" : "from-green-500 to-emerald-500"}`}>
-                              {String(v.publicKey ?? "").slice(0, 2).toUpperCase()}
+                              {String(v?.publicKey ?? "").slice(0, 2).toUpperCase()}
                             </div>
                             <div>
                               <div className={`text-sm font-bold ${isDark ? "text-white" : "text-gray-900"}`}>
-                                {String(v.publicKey ?? "").slice(0, 16)}{String(v.publicKey ?? "").length > 16 ? "..." : ""}
+                                {String(v?.publicKey ?? "").slice(0, 16)}{String(v?.publicKey ?? "").length > 16 ? "..." : ""}
                               </div>
                               <div className="text-xs text-gray-400">
-                                {v.location ?? v.ip ?? "Unknown location"}
+                                {v?.location ?? v?.ip ?? "Unknown location"}
                               </div>
                             </div>
                           </div>
@@ -1402,10 +1121,11 @@ async function safeGetToken(getTokenFn?: typeof getToken) {
                             <div className={`text-sm font-black ${isDark ? "text-white" : "text-gray-900"}`}>
                               {(() => {
                                 // Interpret _pendingNumeric or pendingPayouts as lamports (number | string)
-                                const lamports = Number(v._pendingNumeric ?? v.pendingPayouts ?? 0) || 0;
+                                const lamportsRaw = Number(v?._pendingNumeric ?? v?.pendingPayouts ?? 0);
+                                const lamports = Number.isFinite(lamportsRaw) ? lamportsRaw : 0;
                                 const sol = lamports / 1_000_000_000;
 
-                                if (!isFinite(sol)) return "-";
+                                if (!Number.isFinite(sol)) return "-";
 
                                 // Show up to 6 decimal digits so small balances are visible.
                                 // Adjust maximumFractionDigits if you want more/less precision.
@@ -1417,7 +1137,7 @@ async function safeGetToken(getTokenFn?: typeof getToken) {
                                     <span className="text-purple-500 ml-1">SOL</span>
                                   </>
                                 );
-                                })()}
+                              })()}
                             </div>
 
                             <div className="text-xs text-gray-400">pending rewards</div>
@@ -1431,6 +1151,7 @@ async function safeGetToken(getTokenFn?: typeof getToken) {
             </div>
           </div>
         </section>
+
 
         {/* TESTIMONIALS SECTION */}
         <section className="relative px-6 lg:px-8 py-24" data-reveal>

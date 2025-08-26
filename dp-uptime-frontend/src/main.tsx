@@ -5,10 +5,9 @@ import "./index.css";
 import App from "./App";
 import { BrowserRouter } from "react-router-dom";
 import { ClerkProvider } from "@clerk/clerk-react";
-import { AppProviders } from "./context"; // make sure this path matches where you put AppProviders
+import AppProviders from "./context"; // default export
 
 const PUBLISHABLE_KEY = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
-
 if (!PUBLISHABLE_KEY) {
   throw new Error("Missing Publishable Key");
 }
