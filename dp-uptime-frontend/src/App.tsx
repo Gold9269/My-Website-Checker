@@ -8,6 +8,7 @@ import AutheticateValidator from './pages/AutheticateValidator';
 import GetStarted from './pages/GetStarted';
 import MusicComponent from './components/MusicComponent';
 import { useTheme } from './hooks/ThemeContext';
+import Test from './pages/Test'
 
 function App() {
   // Now safe because ThemeProvider wraps App in index.tsx
@@ -21,6 +22,7 @@ function App() {
         <Route path='/validator' element={<Validator/>} />
         <Route path='/become-validator' element={<AutheticateValidator/>} />
         <Route path='/get-started' element={<GetStarted/>} />
+        <Route path='/docs' element={<Test/>}/>
       </Routes>
 
       {/* Mounted once at root — will not unmount on route change */}
