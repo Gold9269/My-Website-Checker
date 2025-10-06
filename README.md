@@ -1,156 +1,167 @@
-﻿# My Website Checker
-
 My Website Checker
 
 Decentralized Website Uptime & Health Monitoring
-A production-minded monitoring platform combining a MERN frontend/backend, a WebSocket Hub for realtime coordination, and integrated validator logic that performs health checks. Validators are fully integrated and manageable from the UI — there is no separate “Validators” folder or external worker requirement.
+Production-minded monitoring platform combining a MERN frontend/backend, a WebSocket Hub for realtime coordination, and integrated validator logic that performs health checks. Validators are fully integrated and manageable from the UI — no separate “Validators” folder or external worker orchestration required.
 
-Project summary
+Project overview
 
-My Website Checker provides reliable, realtime website and API health monitoring by separating probe execution from presentation while keeping management simple and unified. Monitor definitions and history are stored in the backend (MongoDB), realtime events and coordination flow through a WebSocket Hub, and the validator logic that performs probes is integrated into the system and visible in the UI. The result is a monitoring solution that is resilient, extensible, and operationally practical.
+My Website Checker delivers reliable, real-time website and API health monitoring by separating probe execution from presentation while keeping management simple and unified. Monitor definitions and history are persisted in the backend (MongoDB), realtime events flow through a WebSocket Hub, and validator logic that performs probes is integrated into the system and surfaced in the UI. The platform is built for resilience, extensibility, and operational practicality.
 
 Core value proposition
 
-Decentralized validation with a unified UX: Validators can run in multiple places (cloud, edge, on-prem) but are configured and observed from a single interface.
+Decentralized validation with a unified UX: Run validator logic across multiple environments (cloud, edge, on-prem) while managing and observing everything from a single interface.
 
-Realtime visibility: Low-latency status updates via a WebSocket Hub make incidents immediately visible to operators.
+Realtime visibility: Low-latency updates via the WebSocket Hub make incidents immediately visible to operators.
 
-Extensible probes: The validator layer supports multiple check types (HTTP(S), TCP/ping, TLS, synthetic transactions) and is designed for easy extension.
+Extensible probes: Support for multiple check types (HTTP(S), TCP/ping, TLS, synthetic transactions) with a plug-in friendly validator design.
 
-Audit-ready persistence: All checks, events and administrative actions are stored for historical analysis, SLA calculations, and compliance.
+Audit-ready persistence: All checks, events and administrative actions are stored to enable historical analysis, SLA computation, and compliance.
 
-Operational simplicity: Because validators are integrated into the platform and managed through the UI, there is no separate worker orchestration burden.
+Operational simplicity: Validators are integrated into the platform and surfaced in the UI — no separate worker orchestration burden.
 
 High-level architecture
 
-Frontend (MERN) — React-based UI for creating and managing monitors, viewing realtime dashboards, and inspecting detailed historical results and logs.
+Frontend (MERN) — React UI for creating and managing monitors, realtime dashboards, and historical inspection.
 
-Backend API (MERN) — Node/Express service with MongoDB for persistence, authentication, and serving the UI.
+Backend API (MERN) — Node/Express + MongoDB for persistence, authentication, and API surface consumed by the UI.
 
-Hub (WebSocket) — Realtime message router that coordinates updates and propagates check results between backend and frontend.
+Hub (WebSocket) — Realtime broker that coordinates updates and propagates check results between backend and clients.
 
-Validators (integrated) — Built-in validator modules that execute probes on configured intervals, publish results, and surface status in the UI.
+Validators (integrated) — Built-in validator modules execute probes on configured schedules, publish results, and surface status in the UI.
 
-This separation of concerns enables independent scaling and fault isolation while keeping the operational model simple.
+This separation enables independent scaling and fault isolation while keeping the operational model straightforward.
 
 Key features
 
-Create and manage monitors with flexible settings (intervals, timeouts, expected responses).
+Create and configure monitors (URL/endpoint, cadence, timeouts, expected responses).
 
-Integrated validators — run probes and view validator health directly from the UI.
+Integrated validator execution with in-UI visibility and management — no separate validator folder required.
 
 Realtime status streaming and notifications via the WebSocket Hub.
 
-Persistent historical data (latency, response codes, error details) for trends and audits.
+Persistent historical data (latency, response codes, error details) for trend analysis and audits.
 
-Configurable thresholds and retry logic for robust alerting.
+Configurable thresholds, retry logic and maintenance windows.
 
-Pluggable probe framework to add custom checks.
+Pluggable probe framework for adding custom checks.
 
 Observability hooks for metrics and logs.
 
 How it works (high level)
 
-A monitor is created in the UI (URL/endpoint, cadence, thresholds).
+An operator defines a monitor through the UI (endpoint, interval, thresholds).
 
-The backend stores the monitor and exposes it to the running system.
+The backend stores the monitor and exposes it to the system.
 
-Integrated validator modules execute checks per schedule and report results via the Hub.
+Integrated validator modules execute checks per schedule and report outcomes.
 
 The Hub routes results to the backend and pushes realtime updates to connected clients.
 
-Results are persisted so users can analyze history, compute SLAs, and investigate incidents.
+Results are persisted for analysis, SLA reporting and incident investigation.
 
 Who should use this
 
-My Website Checker is intentionally flexible — validators can be run by virtually anyone, which broadens coverage and increases resilience. Typical users include:
+My Website Checker is intentionally flexible — validation can be performed by virtually anyone, which broadens coverage and increases resilience.
 
-DevOps & SRE teams: Want multi-region, self-hosted monitoring with full control and auditability.
+Ideal users
 
-Small teams & solo developers: Need a simple, extensible monitoring platform without vendor lock-in.
+DevOps & SRE teams — multi-region self-hosted monitoring with full control and auditability.
 
-On-prem / internal IT teams: Monitor internal services using validators inside private networks.
+Small teams & solo developers — low-cost, extensible monitoring without vendor lock-in.
 
-Third-party contributors & partners: Contractors or community members can run validators to extend coverage.
+On-prem / internal IT — run validators inside private networks to safely monitor internal services.
 
-Auditors & compliance teams: Benefit from auditable check history and multi-source validation.
+Third-party contributors & partners — contractors or community members can run validators to extend coverage.
 
-Hobbyists & students: Deploy validators locally to learn real-world monitoring architectures.
+Auditors & compliance teams — use auditable histories and multi-source validation for SLA verification.
+
+Hobbyists & students — learn monitoring architectures by deploying validators locally or on inexpensive cloud instances.
 
 Why “anyone can validate” matters
 
-Wider geographic coverage and reduced blind spots.
+Broader geographic coverage and fewer blind spots.
 
-Higher fault tolerance through redundant validators.
+Increased fault tolerance through validator redundancy.
 
-Community-driven monitoring where partners or users increase reliability.
+Community-driven monitoring where partners and users can contribute additional probes.
 
-Flexible deployment across inexpensive VMs, edge devices, or internal hosts.
+Flexible deployment across cheap VMs, edge devices, or internal hosts.
 
-Trust & result interpretation
+Trust & operational guidance
 
-Allowing many validators increases coverage but introduces considerations around trust and data quality. The platform supports metadata for each result (validator ID, region, timestamp) and encourages using redundancy and consensus across validators for high-confidence alerts. Authentication, reputation tracking, and validator health metrics help manage trust.
+Use authentication and least-privilege tokens for validators.
+
+Include provenance metadata (validator ID, region, timestamp) with each result.
+
+Prefer consensus across multiple validators for high-confidence alerts.
+
+Monitor validator health and reputation to detect noisy or misbehaving validators.
+
+Run internal probes from within private networks to protect sensitive endpoints.
 
 Operational considerations & scaling
 
-Scaling: Scale the backend and persistence layer to support retention and query load. Validator execution can be scaled by deploying additional instances within your chosen environment.
+Scale storage and API independently to support retention and analytics.
 
-Resilience: Consider Hub redundancy—load balancing, clustering, or high-availability patterns to avoid single points of failure.
+Scale validator execution by deploying additional instances or distributing them geographically.
 
-Observability: Export validator and Hub metrics to your telemetry stack (Prometheus, DataDog, etc.) and centralize logs for diagnostics.
+Hub redundancy: consider clustering or load-balancing the Hub to avoid single points of failure.
 
-Deployment: Containerize components and use orchestration platforms (Kubernetes, Docker Compose, cloud services) for repeatable deployments and autoscaling.
+Observability: export metrics (latency, error rates, validator health) and centralize logs for diagnostics.
+
+Deployment: containerize components and use orchestration (Kubernetes, Docker Compose) for reproducible deployments and autoscaling.
 
 Security & privacy
 
-Use TLS for all transports (API and WebSockets).
+Enforce TLS for all transports (API and WebSocket).
 
-Enforce least-privilege access for API and Hub credentials.
+Apply least-privilege for API and Hub credentials and avoid hardcoding secrets in source.
 
-Keep secrets out of source control; use environment variables or a secrets manager.
+Use environment variables or a secrets manager for credentials.
 
-Run private-network probes from inside the network to avoid exposing internal services.
+Run private-network probes from inside the private network to avoid exposing internal endpoints.
 
-Record audit trails of administrative actions and critical events.
+Persist audit logs of administrative actions and critical events for incident response and compliance.
 
 Observability & alerting
 
-Metrics: Track check latency, error rates, and validator health.
+Metrics: collect and export validator and Hub metrics to Prometheus, DataDog, etc.
 
-Logs: Aggregate validator and Hub logs for fast root-cause analysis.
+Logs: aggregate logs for quick root-cause analysis.
 
-Alerts: Integrate with alert sinks (email, Slack, PagerDuty, webhooks) to drive operator workflows and escalation.
+Alerts: integrate with email, Slack, PagerDuty, webhooks, or custom alert sinks.
 
-SLA reporting: Compute uptime and generate reports from persisted history for contractual or compliance use.
+SLA reporting: compute uptime and generate reports from persisted history for contractual use.
 
 Roadmap (example priorities)
 
-Add advanced alerting & escalation channels.
+Advanced alerting & escalation channels (Slack, PagerDuty, webhooks).
 
-Provide SLA dashboards and exportable reports.
+SLA dashboards, exports and scheduled reports.
 
-Add multi-tenant and role-based access control.
+Multi-tenant support and role-based access control (RBAC).
 
-Expand probe types (DNS, browser-based synthetic checks).
+Additional probe types (DNS, browser-based synthetic checks).
 
-Introduce validator reputation scoring and optional signed provenance for high-assurance environments.
+Validator reputation scoring and optional signed provenance for high-assurance environments.
 
-Contributing & collaboration
+Contributing
 
-The platform suits contributors who want to:
+Contributions are welcome. Suggested areas:
 
-Add new probe types or integrations.
+New probe types or integrations.
 
-Improve observability and metrics exports.
+Improvements to observability and metrics exports.
 
-Build UI features for validator fleet management and reporting.
+UI enhancements for validator fleet management and reporting.
 
-Provide clear contribution guidelines, tests, and an overview of the architecture to help new contributors onboard quickly.
+Provide clear contribution guidelines and tests to help onboard new contributors quickly.
 
 Contact & license
 
-For collaboration, support, or questions, include preferred contact details here (email, Slack, GitHub issues, etc.). Choose and state a license (for example, MIT or Apache-2.0) so users and contributors understand usage and contribution terms.
+For collaboration, support, or questions, include preferred contact details (email, GitHub Issues, Slack).
+Choose and state a license to clarify usage and contribution terms (for example MIT or Apache-2.0).
 
 Short product pitch
 
-My Website Checker delivers a resilient, realtime, and extendable uptime monitoring platform that combines the operational simplicity of an integrated validator model with the robustness of decentralized probing. It’s suitable for teams and individuals who want transparent, auditable monitoring with the flexibility to run validators anywhere — all managed from a single, intuitive UI.
+My Website Checker is a resilient, realtime, and extendable uptime monitoring platform that combines the operational simplicity of an integrated validator model with the robustness of decentralized probing. It empowers teams, partners, and community contributors to increase monitoring coverage — all managed from a single, intuitive UI.
