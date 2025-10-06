@@ -3,11 +3,12 @@
   "version": "1.0.0",
   "type": "module",
   "main": "dist/index.js",
-  "scripts": {
-    "dev": "cross-env TS_NODE_TRANSPILE_ONLY=1 node --loader ts-node/esm ./index.ts",
-    "build": "tsc -p tsconfig.json",
-    "start": "node ./dist/index.js"
-  },
+"scripts": {
+  "dev": "cross-env TS_NODE_TRANSPILE_ONLY=1 nodemon",
+  "build": "tsc -p tsconfig.json",
+  "start": "node ./dist/index.js"
+},
+
   "dependencies": {
     "@solana/web3.js": "^1.98.4",
     "bs58": "^6.0.0",
@@ -20,6 +21,7 @@
     "mongoose": "^8.16.0",
     "node-fetch": "^3.3.2",
     "nodemailer": "^7.0.5",
+    "nodemon": "^3.1.10",
     "path": "^0.12.7",
     "tweetnacl": "^1.0.3",
     "tweetnacl-util": "^0.15.1",

@@ -165,7 +165,7 @@ function Navbar({
               ? 'text-white' 
               : 'text-slate-900'
             }`}>
-              DecentWatch
+              Owlwatch
             </span>
           </div>
 

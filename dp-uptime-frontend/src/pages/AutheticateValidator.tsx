@@ -14,6 +14,7 @@ import {
   UserButton,
 } from "@clerk/clerk-react";
 import { useUI } from "../context/ui";
+import { usePhantom } from "../context/PhantomWalletContext"
 
 declare global {
   interface Window {
@@ -86,17 +87,35 @@ export default function Validator(): JSX.Element {
   };
 
   // ---------- Validator page state (unchanged logic) ----------
-  const [publicKey, setPublicKey] = useState<string>(() => {
+  // PUBLIC KEY: remove localStorage usage — use Phantom context as source of truth
+  const [publicKey, setPublicKey] = useState<string>("");
+
+  // Phantom wallet context (safe wrapper)
+  const phantomCtx = (() => {
     try {
-      return localStorage.getItem("validatorPublicKey") ?? "";
+      return usePhantom();
     } catch {
-      return "";
+      return undefined as any;
     }
-  });
+  })();
+
+  // keep local IP / location / UI state
   const [ip, setIp] = useState<string>("");
   const [location, setLocation] = useState<string>("");
   const [loadingIp, setLoadingIp] = useState<boolean>(false);
   const [submitting, setSubmitting] = useState<boolean>(false);
+
+  // Sync publicKey from Phantom context when it becomes available
+  useEffect(() => {
+    try {
+      if (phantomCtx?.address) {
+        setPublicKey(phantomCtx.address);
+      } else {
+        // if wallet disconnected, clear the field (so user can paste)
+        setPublicKey("");
+      }
+    } catch {}
+  }, [phantomCtx?.address]);
 
   useEffect(() => {
     let mounted = true;
@@ -125,6 +144,21 @@ export default function Validator(): JSX.Element {
 
   const connectPhantom = async () => {
     try {
+      // Prefer using the Phantom context if available
+      if (phantomCtx && phantomCtx.isInstalled && typeof phantomCtx.connect === "function") {
+        await phantomCtx.connect();
+        // phantomCtx.address will be synced by the context; use it if present
+        const pk = phantomCtx.address ?? "";
+        if (pk) {
+          setPublicKey(pk);
+          toast.success("Wallet connected");
+        } else {
+          toast.error("No public key returned from wallet");
+        }
+        return;
+      }
+
+      // Fallback to direct window.solana (for parity with previous behavior)
       if (!window.solana || !window.solana.isPhantom) {
         toast.error("Phantom wallet not found. You can paste your public key instead.");
         return;
@@ -148,6 +182,12 @@ export default function Validator(): JSX.Element {
     if (!publicKey) {
       toast.error("Please provide a Solana public key (connect Phantom or paste it).");
       return;
+    } else if (!location) {
+      toast.error("Please provide a location.");
+      return;
+    } else if (!ip) {
+      toast.error("Please provide an IP address.");
+      return;
     }
 
     setSubmitting(true);
@@ -157,9 +197,15 @@ export default function Validator(): JSX.Element {
         try {
           const existing = await checkValidatorByPublicKey(publicKey);
           if (existing) {
+            // set validator in context if available (don't use localStorage)
             try {
-              localStorage.setItem("validatorPublicKey", publicKey);
-            } catch {}
+              if (typeof setValidatorInContext === "function") {
+                setValidatorInContext(existing);
+              }
+            } catch (err) {
+              console.warn("setValidatorInContext failed (non-fatal):", err);
+            }
+
             toast.success("Validator already registered — redirecting...");
             setTimeout(() => window.location.assign("/validator"), 600);
             return;
@@ -201,13 +247,16 @@ export default function Validator(): JSX.Element {
       });
 
       if (res && (res.status === 201 || res.status === 200)) {
-        try {
-          localStorage.setItem("validatorPublicKey", publicKey);
-        } catch {}
+        // On success, try to sync context (prefer check then set, or call registerValidator)
         if (typeof checkValidatorByPublicKey === "function") {
           try {
             const v = await checkValidatorByPublicKey(publicKey);
             if (v) {
+              try {
+                if (typeof setValidatorInContext === "function") setValidatorInContext(v);
+              } catch (err) {
+                console.warn("setValidatorInContext after register failed:", err);
+              }
               toast.success("Validator registered successfully — redirecting...");
             }
           } catch (err) {
@@ -240,9 +289,18 @@ export default function Validator(): JSX.Element {
         status === 409 || (typeof messageStr === "string" && messageStr.toLowerCase().includes("already exists"));
 
       if (alreadyExists) {
+        // sync to context (no localStorage)
         try {
-          localStorage.setItem("validatorPublicKey", publicKey);
-        } catch {}
+          if (typeof checkValidatorByPublicKey === "function") {
+            const v = await checkValidatorByPublicKey(publicKey);
+            if (v && typeof setValidatorInContext === "function") {
+              setValidatorInContext(v);
+            }
+          }
+        } catch (err) {
+          console.warn("Context sync on already-exists path failed:", err);
+        }
+
         toast.success("Validator already exists — redirecting...");
         setTimeout(() => window.location.assign("/validator"), 600);
         return;
@@ -298,14 +356,12 @@ export default function Validator(): JSX.Element {
       };
 
     const [isValidatorLocal, setIsValidatorLocal] = useState<boolean>(() => {
+      // determine initial state from validator context (not localStorage)
       try {
-        if (typeof window !== "undefined") {
-          return !!localStorage.getItem("validatorPublicKey");
-        }
+        return !!ctxValidator;
       } catch {
-        /* ignore */
+        return false;
       }
-      return false;
     });
 
     useEffect(() => {
@@ -339,26 +395,27 @@ export default function Validator(): JSX.Element {
       setPhantomConnecting(true);
 
       try {
-        if (!("solana" in window) || !window.solana?.isPhantom) {
+        // prefer phantom context
+        if (!phantomCtx?.isInstalled) {
           notify.error("Phantom wallet not found. Install Phantom or use the onboarding page.");
           setPhantomConnecting(false);
           return;
         }
 
-        const resp = await window.solana!.connect?.();
-        const pk = resp?.publicKey?.toString?.() ?? "";
+        if (typeof phantomCtx.connect === "function") {
+          await phantomCtx.connect();
+        } else if (window.solana?.connect) {
+          await window.solana.connect();
+        }
+
+        const pk = phantomCtx?.address ?? (window.solana?.publicKey?.toString?.() ?? "");
         if (!pk) {
           notify.error("Failed to retrieve public key from Phantom.");
           setPhantomConnecting(false);
           return;
         }
 
-        try {
-          localStorage.setItem("validatorPublicKey", pk);
-        } catch (e) {
-          console.warn("localStorage write failed for validatorPublicKey", e);
-        }
-
+        // do not write to localStorage — use validator context when possible
         let record = null;
         if (typeof checkValidatorByPublicKey === "function") {
           try {
@@ -396,10 +453,9 @@ export default function Validator(): JSX.Element {
     const handleDisconnect = async () => {
       try {
         try {
-          localStorage.removeItem("validatorPublicKey");
-        } catch {}
-        try {
-          if (window.solana && typeof window.solana.disconnect === "function") {
+          if (phantomCtx && typeof phantomCtx.disconnect === "function") {
+            await phantomCtx.disconnect();
+          } else if (window.solana && typeof window.solana.disconnect === "function") {
             await window.solana.disconnect();
           }
         } catch (err) {
@@ -421,78 +477,77 @@ export default function Validator(): JSX.Element {
     // Best-effort validators count (non-blocking)
     const [validatorsCount, setValidatorsCount] = useState<number | null>(null);
     useEffect(() => {
-  let mounted = true;
+      let mounted = true;
 
-  async function fetchValidatorsCount() {
-    try {
-      // attempt to get Clerk token (best-effort)
-      let token: string | null = null;
-      try {
-        token = await getToken();
-      } catch (err) {
-        token = null;
-      }
-
-      const urlCandidates = [
-        `${backendUrl}/api/v1/get-all-validator`
-      ];
-
-      for (const u of urlCandidates) {
+      async function fetchValidatorsCount() {
         try {
-          // prepare headers (include Authorization if token present)
-          const headers: Record<string, string> = { Accept: "application/json" };
-          if (token) headers.Authorization = `Bearer ${token}`;
-
-          const r = await fetch(u, { credentials: "include", headers });
-          if (!r.ok) continue;
-          const j = await r.json().catch(() => null);
-          if (!j) continue;
-
-          if (Array.isArray(j)) {
-            if (mounted) setValidatorsCount(j.length);
-            return;
-          }
-          if (Array.isArray((j as any).validators)) {
-            if (mounted) setValidatorsCount((j as any).validators.length);
-            return;
-          }
-          if (typeof (j as any).count === "number") {
-            if (mounted) setValidatorsCount((j as any).count);
-            return;
+          // attempt to get Clerk token (best-effort)
+          let token: string | null = null;
+          try {
+            token = await getToken();
+          } catch (err) {
+            token = null;
           }
 
-          // fallback: look for first array value in object
-          if (typeof j === "object" && j !== null) {
-            const maybeArray = Object.values(j).find(v => Array.isArray(v)) as any;
-            if (Array.isArray(maybeArray)) {
-              if (mounted) setValidatorsCount(maybeArray.length);
-              return;
+          const urlCandidates = [
+            `${backendUrl}/api/v1/get-all-validator`
+          ];
+
+          for (const u of urlCandidates) {
+            try {
+              // prepare headers (include Authorization if token present)
+              const headers: Record<string, string> = { Accept: "application/json" };
+              if (token) headers.Authorization = `Bearer ${token}`;
+
+              const r = await fetch(u, { credentials: "include", headers });
+              if (!r.ok) continue;
+              const j = await r.json().catch(() => null);
+              if (!j) continue;
+
+              if (Array.isArray(j)) {
+                if (mounted) setValidatorsCount(j.length);
+                return;
+              }
+              if (Array.isArray((j as any).validators)) {
+                if (mounted) setValidatorsCount((j as any).validators.length);
+                return;
+              }
+              if (typeof (j as any).count === "number") {
+                if (mounted) setValidatorsCount((j as any).count);
+                return;
+              }
+
+              // fallback: look for first array value in object
+              if (typeof j === "object" && j !== null) {
+                const maybeArray = Object.values(j).find(v => Array.isArray(v)) as any;
+                if (Array.isArray(maybeArray)) {
+                  if (mounted) setValidatorsCount(maybeArray.length);
+                  return;
+                }
+              }
+            } catch (err) {
+              // try next candidate
+              console.debug("validator count candidate failed:", u, err);
             }
           }
+
+          // none worked
+          if (mounted) setValidatorsCount(null);
         } catch (err) {
-          // try next candidate
-          console.debug("validator count candidate failed:", u, err);
+          console.debug("fetchValidatorsCount top-level error:", err);
+          if (mounted) setValidatorsCount(null);
         }
       }
 
-      // none worked
-      if (mounted) setValidatorsCount(null);
-    } catch (err) {
-      console.debug("fetchValidatorsCount top-level error:", err);
-      if (mounted) setValidatorsCount(null);
-    }
-  }
+      // run once then poll
+      void fetchValidatorsCount();
+      const id = window.setInterval(() => { void fetchValidatorsCount(); }, 30_000);
 
-  // run once then poll
-  void fetchValidatorsCount();
-  const id = window.setInterval(() => { void fetchValidatorsCount(); }, 30_000);
-
-  return () => {
-    mounted = false;
-    clearInterval(id);
-  };
-}, [getToken]);
-
+      return () => {
+        mounted = false;
+        clearInterval(id);
+      };
+    }, [getToken]);
 
     const displayNodes = validatorsCount ?? nodesOnline;
 

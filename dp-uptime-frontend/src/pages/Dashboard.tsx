@@ -366,7 +366,7 @@ function Navbar({
             </div>
             <div>
               <span className={`text-2xl font-bold bg-gradient-to-r ${isDark ? "from-blue-400 via-indigo-400 to-purple-400" : "from-blue-600 via-indigo-600 to-purple-600"} bg-clip-text text-transparent`}>
-                DecentWatch
+                Owlwatch
               </span>
               <div className="text-xs text-gray-400 -mt-1">Decentralized Monitoring</div>
             </div>

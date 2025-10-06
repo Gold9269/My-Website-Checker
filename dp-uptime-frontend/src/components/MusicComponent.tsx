@@ -30,7 +30,7 @@ function ensureAudioElemOnce(): HTMLAudioElement {
   a.src = MUSIC_URL;
   try { a.load(); } catch {}
   a.addEventListener('error', () => {
-    console.error('Audio element error', a.error, a.currentSrc, a.getAttribute('crossorigin'));
+    //console.error('Audio element error', a.error, a.currentSrc, a.getAttribute('crossorigin'));
     const alreadyRetried = a.getAttribute('data-retried-nocors') === '1';
     const hadCross = a.getAttribute('crossorigin') !== null;
     if (!alreadyRetried && hadCross) {
@@ -39,7 +39,7 @@ function ensureAudioElemOnce(): HTMLAudioElement {
     }
     if (!audioToastLock) {
       audioToastLock = true;
-      toast.error('Audio element error. Check console/network/CORS.');
+      //toast.error('Audio element error. Check console/network/CORS.');
     }
   });
   a.addEventListener('timeupdate', () => {

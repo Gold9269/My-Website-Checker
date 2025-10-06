@@ -6,6 +6,7 @@ import App from "./App";
 import { BrowserRouter } from "react-router-dom";
 import { ClerkProvider } from "@clerk/clerk-react";
 import AppProviders from "./context"; // default export
+import { PhantomWalletProvider } from "./context/PhantomWalletContext";
 
 const PUBLISHABLE_KEY = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
 if (!PUBLISHABLE_KEY) {
@@ -17,7 +18,9 @@ createRoot(document.getElementById("root")!).render(
     <ClerkProvider publishableKey={PUBLISHABLE_KEY} afterSignOutUrl="/">
       <AppProviders>
         <BrowserRouter>
+        <PhantomWalletProvider>
           <App />
+        </PhantomWalletProvider>
         </BrowserRouter>
       </AppProviders>
     </ClerkProvider>

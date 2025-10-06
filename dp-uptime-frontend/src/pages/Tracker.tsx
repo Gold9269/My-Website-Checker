@@ -3,11 +3,12 @@ import React, { useState, useMemo, useRef, useEffect } from 'react';
 import { ChevronDown, ChevronUp, Globe, Plus, Moon, Sun, Trash2, Activity, Network } from 'lucide-react';
 import { useWebsites } from '../hooks/useWebsites';
 import axios from 'axios';
-import { SignedIn, SignedOut, SignInButton, SignUpButton, useAuth, UserButton } from '@clerk/clerk-react';
+import { SignedIn, SignedOut, SignInButton, SignUpButton, useAuth, useUser, UserButton } from '@clerk/clerk-react';
 import toast, { Toaster } from 'react-hot-toast';
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts';
 import { Connection, PublicKey, SystemProgram, Transaction, clusterApiUrl, LAMPORTS_PER_SOL } from '@solana/web3.js';
 import { useValidator } from '../context/validator';
+import OwlwatchLoader from './Loading';
 
 // ---------- safe env helper ----------
 declare global {
@@ -96,6 +97,9 @@ function CreateWebsiteModal({
   const [url, setUrl] = useState('');
   const [processing, setProcessing] = useState(false);
   const lamportsToSend = Math.round(0.1 * LAMPORTS_PER_SOL); // 0.1 SOL
+
+  // Clerk user fallback for ownerEmail
+  const { user } = useUser() as any || {}; // useUser returns user when signed in
 
   useEffect(() => {
     if (!isOpen) {
@@ -209,13 +213,35 @@ function CreateWebsiteModal({
         });
       }
 
-      // POST to backend (send signature string + payer public key)
+      // Build POST body and headers
       const token = getToken ? await safeGetToken(getToken) : null;
-      await axios.post(
+
+      // client-side fallback ownerEmail from Clerk
+      const clientOwnerEmail =
+        (user as any)?.primaryEmailAddress?.emailAddress ??
+        (user as any)?.emailAddresses?.[0]?.emailAddress ??
+        (user as any)?.email ??
+        null;
+
+      const body: any = { url, txSignature, payerPublicKey: payerPubkey.toString() };
+      if (clientOwnerEmail) body.ownerEmail = clientOwnerEmail;
+
+      const headers: any = { 'Content-Type': 'application/json', Accept: 'application/json' };
+      if (token) headers.Authorization = `Bearer ${token}`;
+
+      // POST to backend (send signature string + payer public key + optional ownerEmail)
+      const res = await axios.post(
         `${BACKEND_URL}/api/v1/create-website`,
-        { url, txSignature, payerPublicKey: payerPubkey.toString() },
-        token ? { headers: { Authorization: `Bearer ${token}` } } : {}
+        body,
+        { headers, withCredentials: true }
       );
+
+      console.log('[CreateWebsiteModal] create-website response:', res?.data);
+
+      // If backend returned website with ownerEmail null, log to help debugging
+      if (res?.data?.website) {
+        console.log('[CreateWebsiteModal] created website ownerEmail:', res.data.website.ownerEmail);
+      }
 
       toast.success('Payment successful and website uploaded.');
       onClose(url);
@@ -283,24 +309,54 @@ interface ProcessedWebsite {
   lastAlertAt?: string;
 }
 
-function WebsiteCard({ website, isDark }: { website: ProcessedWebsite; isDark: boolean }) {
-  const deleteUrl = `${BACKEND_URL}/api/v1/delete-website`;
-  const { getToken } = useAuth();
+function WebsiteCard({
+  website,
+  isDark,
+  getToken,
+}: {
+  website: ProcessedWebsite;
+  isDark: boolean;
+  getToken?: () => Promise<string>;
+}) {
+  // Build delete URL base (we will append the id)
+  const deleteUrlBase = `${BACKEND_URL}/api/v1/delete-website`;
+  // NOTE: do NOT call useAuth() here — getToken is passed from parent to avoid runtime destructuring errors
   const [isExpanded, setIsExpanded] = useState(false);
   const { refreshWebsites } = useWebsites();
   const [loading, setLoading] = useState(false);
 
   const handleDelete = async (e: React.MouseEvent) => {
     e.stopPropagation();
+
+    // Confirmation to avoid accidental deletes
+    const ok = window.confirm(`Delete site "${website.url}"? This action cannot be undone.`);
+    if (!ok) return;
+
     try {
       setLoading(true);
       const toastId = toast.loading('Deleting website...');
+
       const token = await safeGetToken(getToken);
-      await axios.delete(deleteUrl,
-        {
-          headers: token ? { Authorization: `Bearer ${token}` } : undefined,
-          data: { id: website.id },
-        });
+
+      // Send DELETE as explicit request with id in path + in body (robust across proxies/servers)
+      const urlWithId = `${deleteUrlBase}/${encodeURIComponent(website.id)}`;
+
+      // Always include id in body too (some servers ignore DELETE body — this is defensive)
+      const headers: Record<string, string> = { Accept: 'application/json' };
+      if (token) headers.Authorization = `Bearer ${token}`;
+
+      console.debug('[WebsiteCard] deleting website', { id: website.id, urlWithId });
+
+      await axios.request({
+        url: urlWithId,
+        method: 'DELETE',
+        headers,
+        data: { id: website.id },
+        withCredentials: true,
+        timeout: 15_000,
+      });
+
+      // refresh list after delete
       await refreshWebsites();
       toast.success('Website deleted', { id: toastId });
     } catch (err) {
@@ -330,8 +386,12 @@ function WebsiteCard({ website, isDark }: { website: ProcessedWebsite; isDark: b
         </div>
         <div className="flex items-center space-x-4">
           <span className={`text-sm ${smallTextClass}`}>
-            {website.uptimePercentage.toFixed(1)}% uptime
-          </span>
+  {Number.isFinite(Number(website.uptimePercentage))
+    ? `${Number(website.uptimePercentage).toFixed(1)}% uptime`
+    : 'No uptime data'}
+</span>
+
+
           <button
             onClick={handleDelete}
             className="flex items-center gap-2 flex-none bg-red-600 hover:bg-red-700 text-white text-sm px-3 py-1 rounded"
@@ -486,7 +546,7 @@ function Navbar({
               <Network className={`w-8 h-8 ${isDark ? "text-blue-300" : "text-blue-600"} animate-pulse`} />
               <div className="absolute -top-1 -right-1 w-3 h-3 bg-green-500 rounded-full animate-ping" />
             </div>
-            <span className={`text-xl font-bold ${isDark ? 'text-white' : 'text-slate-800'}`}>DecentWatch</span>
+            <span className={`text-xl font-bold ${isDark ? 'text-white' : 'text-slate-800'}`}>Owlwatch</span>
           </div>
 
           <div className="flex items-center space-x-6">
@@ -592,7 +652,7 @@ export default function App(): JSX.Element {
   // websites hook
   const { websites, refreshWebsites } = useWebsites() as { websites?: any[]; refreshWebsites: () => Promise<void> };
 
-  // Clerk auth
+  // Clerk auth (safe)
   const auth = (() => { try { return useAuth(); } catch { return undefined as any; } })();
   const getToken = auth?.getToken;
 
@@ -609,18 +669,6 @@ export default function App(): JSX.Element {
   const [walletPublicKey, setWalletPublicKey] = useState<string | null>(null);
   const [walletConnecting, setWalletConnecting] = useState(false);
 
-  // useEffect(() => {
-  //   try {
-  //     const p = (window as any).solana;
-  //     if (p && p.isPhantom) {
-  //       // Listen for connect/disconnect events to update UI.
-  //       p.on && p.on('connect', (pk: any) => setWalletPublicKey(pk.toString()));
-  //       p.on && p.on('disconnect', () => setWalletPublicKey(null));
-  //       // NOTE: intentionally DO NOT read p.isConnected here — we want a fresh explicit connect from user.
-  //     }
-  //   } catch {}
-  // }, []);
-
   const connectWallet = async () => {
     try {
       setWalletConnecting(true);
@@ -629,14 +677,11 @@ export default function App(): JSX.Element {
         toast.error('No Solana wallet available (install Phantom).');
         return;
       }
-      // Force the wallet UI to prompt / show the connect dialog even if previously trusted.
-      // `onlyIfTrusted: false` causes Phantom to always show the connection popup.
       const resp = await provider.connect({ onlyIfTrusted: false });
       setWalletPublicKey(resp.publicKey?.toString() ?? resp?.publicKey?.toString?.() ?? null);
       toast.success('Wallet connected');
     } catch (err: any) {
       console.error('connectWallet', err);
-      // Phantom throws when user closes popup; show friendly message only for unexpected failures
       if (err?.message && /rejected/i.test(err.message)) {
         toast('Wallet connection rejected');
       } else {
@@ -749,7 +794,7 @@ export default function App(): JSX.Element {
       const totalTicks = sortedTicks.length;
       const goodCount = sortedTicks.filter((t: any) => String(t.status).toLowerCase() === "good").length;
       const badCount = sortedTicks.filter((t: any) => String(t.status).toLowerCase() === "bad").length;
-      const uptimePercentage = totalTicks === 0 ? 100 : (goodCount / totalTicks) * 100;
+      const uptimePercentage = totalTicks === 0 ? NaN : (goodCount / totalTicks) * 100;
 
       const avgLatency =
         recentTicks.length === 0
@@ -834,7 +879,8 @@ export default function App(): JSX.Element {
           </div>
 
           {loadingWebsites ? (
-            <div className={`py-20 text-center ${isDarkMode ? 'text-slate-300' : 'text-gray-500'}`}>Loading websites...</div>
+            // <div className={`py-20 text-center ${isDarkMode ? 'text-slate-300' : 'text-gray-500'}`}>Loading websites...</div>
+            <OwlwatchLoader/>
           ) : websitesError ? (
             <div className="py-20 text-center text-red-500">
               <div>Failed to load websites: {websitesError}</div>
@@ -849,7 +895,7 @@ export default function App(): JSX.Element {
           ) : (
             <div className="space-y-4">
               {processedWebsites.map(website => (
-                <WebsiteCard key={website.id} website={website} isDark={isDarkMode} />
+                <WebsiteCard key={website.id} website={website} isDark={isDarkMode} getToken={getToken} />
               ))}
             </div>
           )}

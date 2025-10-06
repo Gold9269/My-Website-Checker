@@ -36,6 +36,6 @@ router.post("/change-to-online",  authMiddleware as RequestHandler,OnlineStatusC
 router.post("/change-to-offline",  authMiddleware as RequestHandler,OfflineStatusController);
 
 
-router.delete("/delete-website", authMiddleware as RequestHandler, DeleteWebsiteController);
+router.delete("/delete-website/:id", authMiddleware as RequestHandler, DeleteWebsiteController);
 
 export default router;

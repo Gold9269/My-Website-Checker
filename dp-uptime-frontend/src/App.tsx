@@ -9,6 +9,7 @@ import GetStarted from './pages/GetStarted';
 import MusicComponent from './components/MusicComponent';
 import { useTheme } from './hooks/ThemeContext';
 import Test from './pages/Test'
+import OwlwatchLoader from './pages/Loading';
 
 function App() {
   // Now safe because ThemeProvider wraps App in index.tsx
@@ -23,6 +24,7 @@ function App() {
         <Route path='/become-validator' element={<AutheticateValidator/>} />
         <Route path='/get-started' element={<GetStarted/>} />
         <Route path='/docs' element={<Test/>}/>
+        <Route path='/loading' element={<OwlwatchLoader/>}/>
       </Routes>
 
       {/* Mounted once at root — will not unmount on route change */}

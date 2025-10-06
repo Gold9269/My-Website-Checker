@@ -1,5 +1,7 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { Shield, Activity, Zap, Globe, Users, Eye, Award, TrendingUp, Network, Server, Cpu, Lock, Layers, Sparkles, ArrowRight, ChevronDown } from 'lucide-react';
+import axios from 'axios';
+import { useAuth } from '@clerk/clerk-react';
 
 // Advanced 3D Floating Elements with Physics
 const Advanced3DElements = () => {
@@ -251,6 +253,76 @@ function GetStarted() {
   const handleMonitorWebsites = () => {
     window.location.href = '/tracker';
   };
+  const { getToken } = useAuth();
+  const [activeValidators, setActiveValidators] = useState<number>(0);
+  const [totalwebsites, setTotalWebsites] = useState<number>(0);
+
+  useEffect(() => {
+    const fetchActiveValidators = async () => {
+      let token: string | null = null;
+      try {
+        token = await getToken();
+      } catch (err) {
+        token = null;
+      }
+
+      if (!token) {
+        console.error("You are not authenticated. Please sign in before fetching validators.");
+        return;
+      }
+
+      try {
+        const backendUrl = "http://localhost:5000";
+        const res = await axios.get(`${backendUrl}/api/v1/get-all-validator`, {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+          },
+          timeout: 15_000,
+        });
+        //console.log("response of get all validators is ", res);
+        if (res.data && typeof res.data.count === 'number') {
+          setActiveValidators(res.data.count);
+        }
+      } catch (error) {
+        console.log(error);
+      }
+    };
+    fetchActiveValidators();
+  }, [getToken]);
+  useEffect(() => {
+    const fetchTotalWebsites = async () => {
+      let token: string | null = null;
+      try {
+        token = await getToken();
+      } catch (err) {
+        token = null;
+      }
+
+      if (!token) {
+        console.error("You are not authenticated. Please sign in before fetching validators.");
+        return;
+      }
+
+      try {
+        const backendUrl = "http://localhost:5000";
+        const res = await axios.get(`${backendUrl}/api/v1/get-all-db-websites`, {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+          },
+          timeout: 15_000,
+        });
+        console.log("response of get all websites is ", res);
+        if (res.data) {
+          setTotalWebsites(res.data.websites.length);
+        }
+      } catch (error) {
+        console.log(error);
+      }
+    };
+    fetchTotalWebsites();
+  }, [getToken]);
 
   return (
     <div className="min-h-screen relative overflow-hidden bg-black">
@@ -439,8 +511,8 @@ function GetStarted() {
           {/* Network Stats */}
           <div className="w-full max-w-6xl mx-auto">
             <div className="flex flex-wrap justify-center gap-6">
-              <StatsCounter value="2,847" label="Active Validators" icon={Users} />
-              <StatsCounter value="15,392" label="Sites Monitored" icon={Server} />
+              <StatsCounter value={`${activeValidators}`} label="Active Validators" icon={Users} />
+              <StatsCounter value={`${totalwebsites}`} label="Sites Monitored" icon={Server} />
               <StatsCounter value="99.97%" label="Network Uptime" icon={TrendingUp} />
               <StatsCounter value="24/7" label="Global Coverage" icon={Globe} />
             </div>

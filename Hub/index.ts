@@ -131,6 +131,7 @@ async function sendEmail_Nodemailer(to: string, subject: string, text: string, h
     return info;
   } catch (err: any) {
     console.error("[HUB] sendEmail_Nodemailer error:", err && err.message ? err.message : err);
+    // rethrow so caller can handle logging/state if needed
     throw err;
   }
 }
@@ -346,17 +347,24 @@ async function persistTickAndPayoutFallback(websiteId: any, websiteOwnerId: any,
 // ---------------- notification helper ----------------
 async function tryNotifyOwnerIfNeeded(websiteId: any, websiteOwnerId: any, status: string, latency: number) {
   try {
-    if (String(status).toLowerCase() !== "bad") return;
+    console.debug("[HUB] notify: invoked", { websiteId: String(websiteId), websiteOwnerId: String(websiteOwnerId), status, latency });
+    if (String(status).toLowerCase() !== "bad") {
+      console.debug("[HUB] notify: status not 'bad', skipping");
+      return;
+    }
     const websiteDoc: any = await Website.findById(websiteId).lean();
     if (!websiteDoc) {
-      console.warn("[HUB] notify: website not found");
+      console.warn("[HUB] notify: website not found", { websiteId: String(websiteId) });
       return;
     }
-    const ownerEmail = websiteDoc.ownerEmail ?? null;
+
+    // defensive ownerEmail lookup: many apps use different fields; fallbacks included
+    const ownerEmail = websiteDoc.ownerEmail ?? websiteDoc.email ?? websiteDoc.owner?.email ?? null;
     if (!ownerEmail) {
-      console.log("[HUB] notify: no ownerEmail; skipping notification");
+      console.log("[HUB] notify: no ownerEmail; skipping notification", { websiteId: String(websiteId), websiteDoc });
       return;
     }
+
     if (ALERT_CONSECUTIVE_REQUIRED > 1) {
       const ok = await hasConsecutiveBadTicks(websiteId, ALERT_CONSECUTIVE_REQUIRED, ALERT_CONSECUTIVE_LOOKBACK);
       if (!ok) {
@@ -364,19 +372,35 @@ async function tryNotifyOwnerIfNeeded(websiteId: any, websiteOwnerId: any, statu
         return;
       }
     }
+
     const cooldownMinutes = websiteDoc.alertCooldownMinutes ?? 15;
     const lastAlertAt = websiteDoc.lastAlertAt ? new Date(websiteDoc.lastAlertAt).getTime() : 0;
     const now = Date.now();
     if (now - lastAlertAt < cooldownMinutes * 60 * 1000) {
-      console.log("[HUB] notify: cooldown in effect; skipping email");
+      console.log("[HUB] notify: cooldown in effect; skipping email", {
+        websiteId: String(websiteId),
+        lastAlertAt: lastAlertAt ? new Date(lastAlertAt).toISOString() : "<none>",
+        cooldownMinutes,
+      });
       return;
     }
+
+    if (!mailTransporter) {
+      console.warn("[HUB] notify: mailTransporter not configured — cannot send email", { to: ownerEmail });
+      return;
+    }
+
     const subject = `Alert: ${websiteDoc.url} appears down`;
     const text = `Your website ${websiteDoc.url} was reported down at ${new Date().toLocaleString()}. Latency: ${latency} ms.`;
     const html = `<p>Your website <strong>${websiteDoc.url}</strong> was reported down at <strong>${new Date().toLocaleString()}</strong>.</p>\n<p>Latency: <strong>${latency} ms</strong></p>`;
+
     try {
       const info = await sendEmail_Nodemailer(ownerEmail, subject, text, html);
-      await Website.updateOne({ _id: websiteId }, { $set: { lastAlertAt: new Date() } });
+      try {
+        await Website.updateOne({ _id: websiteId }, { $set: { lastAlertAt: new Date() } });
+      } catch (uErr) {
+        console.warn("[HUB] notify: failed updating lastAlertAt on website:", uErr);
+      }
       console.log("[HUB] Sent downtime email to", ownerEmail, "info:", info && (info.messageId ?? info.response));
     } catch (emailErr) {
       console.error("[HUB] Failed sending email:", emailErr);
@@ -611,6 +635,23 @@ async function importAndRebindModels() {
         res.json({ ok: true, info });
       } catch (err) {
         console.error("/test-email error:", err);
+        res.status(500).json({ ok: false, error: String(err) });
+      }
+    });
+
+    // Force-notify route for diagnostics (call to independently test notification logic)
+    app.post("/force-notify/:websiteId", async (req, res) => {
+      try {
+        const websiteId = req.params.websiteId;
+        if (!websiteId) return res.status(400).json({ ok: false, error: "missing websiteId" });
+        const websiteDoc = await Website.findById(websiteId).lean();
+        if (!websiteDoc) return res.status(404).json({ ok: false, error: "website not found" });
+
+        console.log("[HUB] /force-notify called for", websiteId, "ownerEmail:", websiteDoc.ownerEmail ?? websiteDoc.email);
+        await tryNotifyOwnerIfNeeded(websiteId, websiteDoc.userId, "bad", 1234);
+        res.json({ ok: true, msg: "notification attempted (check logs)" });
+      } catch (err) {
+        console.error("/force-notify error:", err);
         res.status(500).json({ ok: false, error: String(err) });
       }
     });

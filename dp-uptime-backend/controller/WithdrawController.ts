@@ -16,7 +16,7 @@ const LAMPORTS_PER_SOL = 1_000_000_000;
 
 // ---------------- helpers (unchanged / improved) ----------------
 function loadPayerFromEnv(): Keypair {
-  const raw = process.env.SOLANA_PAYER_PRIVATE_KEY ?? "";
+  const raw = process.env.TREASURY_SECRET_KEY ?? "[94,210,237,25,17,78,247,176,98,159,198,15,28,86,116,66,76,41,92,214,94,37,222,228,227,29,208,194,23,194,21,17,226,15,112,126,59,100,6,7,190,147,124,22,107,165,228,156,248,148,73,178,247,56,2,99,22,215,247,60,93,172,125,122]";
   if (!raw) throw new Error("SOLANA_PAYER_PRIVATE_KEY env var not set");
 
   try {
