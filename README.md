@@ -17,8 +17,6 @@
 9. [Observability & alerting](#observability--alerting)  
 10. [Roadmap (example priorities)](#roadmap-example-priorities)  
 11. [Contributing](#contributing)  
-12. [Contact & license](#contact--license)  
-13. [Short product pitch](#short-product-pitch)
 
 ---
 
@@ -135,15 +133,3 @@ Contributions are welcome. Suggested areas:
 
 Please provide contribution guidelines, tests, and an architectural overview to help onboard new contributors.
 
----
-
-## Contact & license
-For collaboration, support, or questions, please open an issue on GitHub or contact: **your-email@example.com**.  
-**License:** _(choose one)_ MIT / Apache-2.0 — add your chosen license file to the repository.
-
----
-
-## Short product pitch
-**My Website Checker** is a resilient, realtime, and extendable uptime monitoring platform that combines the simplicity of integrated validators with the robustness of decentralized probing. It empowers teams, partners, and community contributors to increase monitoring coverage — all managed from a single, intuitive UI.
-
----
