@@ -1,0 +1,26 @@
+{
+  "name": "my-website-checker",
+  "version": "1.0.0",
+  "description": "��#\u0000 \u0000M\u0000y\u0000 \u0000W\u0000e\u0000b\u0000s\u0000i\u0000t\u0000e\u0000 \u0000C\u0000h\u0000e\u0000c\u0000k\u0000e\u0000r\u0000\r\u0000 \u0000",
+  "main": "index.js",
+  "scripts": {
+    "dev:backend": "cd dp-uptime-backend && npm run dev",
+    "dev:frontend": "cd dp-uptime-frontend && npm run dev",
+    "dev:hub": "cd Hub && npm run dev",
+    "dev": "concurrently \"npm:dev:backend\" \"npm:dev:frontend\" \"npm:dev:hub\" --names backend,frontend,hub -c \"yellow.bold,magenta.bold,cyan.bold\""
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Gold9269/My-Website-Checker.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/Gold9269/My-Website-Checker/issues"
+  },
+  "homepage": "https://github.com/Gold9269/My-Website-Checker#readme",
+  "devDependencies": {
+    "concurrently": "^9.2.1"
+  }
+}

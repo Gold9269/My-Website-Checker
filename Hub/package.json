@@ -26,7 +26,7 @@
     "typescript": "^5.9.2"
   },
   "scripts": {
-    "dev": "cross-env TS_NODE_TRANSPILE_ONLY=1 nodemon --loader ts-node/esm ./index.ts",
+    "dev": "cross-env TS_NODE_TRANSPILE_ONLY=1 nodemon",
     "build": "tsc",
     "start": "node ./dist/index.js"
   }
