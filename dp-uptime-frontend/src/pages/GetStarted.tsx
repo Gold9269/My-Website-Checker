@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useRef } from 'react';
-import { Shield, Activity, Zap, Globe, Users, Eye, Award, TrendingUp, Network, Server, Cpu, Lock, Layers, Sparkles, ArrowRight, ChevronDown } from 'lucide-react';
+import { Shield, Activity, Zap, Globe, Users, Eye, Award, TrendingUp, Network, Server, Sparkles, ArrowRight } from 'lucide-react';
 import axios from 'axios';
 import { useAuth } from '@clerk/clerk-react';
 
@@ -528,7 +528,7 @@ function GetStarted() {
       </div>
 
       {/* Advanced CSS Styles */}
-      <style jsx>{`
+      <style>{`
         .perspective-1000 {
           perspective: 1000px;
         }

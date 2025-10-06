@@ -1,9 +1,9 @@
 // src/components/MusicComponent.tsx
 'use client';
-import React, { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Pause, Play, Volume2, VolumeX } from 'lucide-react';
 import toast from 'react-hot-toast';
-import { useTheme } from '../hooks/ThemeContext'; // adjust path if needed
+// import { useTheme } from '../hooks/ThemeContext'; // adjust path if needed
 
 const MUSIC_URL = 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3';
 const CURRENT_TIME_KEY = 'music-current-time';
@@ -114,8 +114,8 @@ function getSavedCurrentTime(): number | null {
   } catch { return null; }
 }
 
-export default function MusicComponent() {
-  const { isDark } = useTheme(); // read theme directly from context
+export default function MusicComponent({isDark}: {isDark:boolean}) {
+  // const { isDark } = useTheme(); // read theme directly from context
   const [isPlaying, setIsPlaying] = useState(false);
   const [isMuted, setIsMuted] = useState(false);
   const [volume, setVolume] = useState(0.5);

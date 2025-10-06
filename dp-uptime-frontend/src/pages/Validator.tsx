@@ -1,9 +1,9 @@
 // src/pages/Validator.tsx
 import React, { useEffect, useRef, useState } from "react";
-import { Globe, Moon, Sun, Network, TrendingUp, Zap, Activity, DollarSign, Eye, EyeOff, Sparkles, Wifi, WifiOff, Power, PowerOff } from "lucide-react";
+import { Globe, Moon, Sun, Network, TrendingUp, Zap, Activity, DollarSign, Eye, EyeOff, Wifi, WifiOff, Power, PowerOff } from "lucide-react";
 import { useAuth, SignedIn, SignedOut, SignInButton, SignUpButton, UserButton, useUser } from "@clerk/clerk-react";
 import toast, { Toaster } from "react-hot-toast";
-import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, Area, AreaChart } from "recharts";
+import { XAxis, YAxis, Tooltip, ResponsiveContainer, Area, AreaChart } from "recharts";
 import { useValidator } from "../context/validator";
 import axios from "axios";
 
@@ -22,7 +22,6 @@ function Navbar({
   isDark,
   toggleTheme,
   nodesOnline = 0,
-  onGetStarted,
   onValidatorDisconnect,
   onValidatorConnect,
   connectedPublicKey,
@@ -34,8 +33,8 @@ function Navbar({
   onValidatorDisconnect?: () => void;
   onValidatorConnect?: (publicKey: string) => void;
   connectedPublicKey?: string | null;
-}): JSX.Element {
-  const { validator, pendingPayoutsSol, setValidator: setValidatorInContext } = (() => {
+}): React.ReactElement {
+  const { setValidator: setValidatorInContext } = (() => {
     try { return useValidator(); } catch { return { validator: null, pendingPayoutsSol: null, setValidator: undefined } as any; }
   })();
 
@@ -244,7 +243,7 @@ function Navbar({
 }
 
 // ---------- Clean Validator Page ----------
-export default function Validator(): JSX.Element {
+export default function Validator(): React.ReactElement {
   const { getToken } = useAuth();
 
   // theme
@@ -260,12 +259,11 @@ export default function Validator(): JSX.Element {
   // state & refs
   const [publicKey, setPublicKey] = useState<string>(() => { try { return localStorage.getItem("validatorPublicKey") ?? ""; } catch { return ""; } });
   const [monitoring, setMonitoring] = useState(false);
-  const [tokenInput, setTokenInput] = useState<string>(() => { try { return localStorage.getItem("validator_bearer_token") ?? ""; } catch { return ""; } });
+  const [tokenInput] = useState<string>(() => { try { return localStorage.getItem("validator_bearer_token") ?? ""; } catch { return ""; } });
   const [showKey, setShowKey] = useState(false);
 
   // registration modal and state
   const [showNotRegisteredModal, setShowNotRegisteredModal] = useState(false);
-  const [isValidatorRegistered, setIsValidatorRegistered] = useState<boolean | null>(null);
   const [checkingRegistration, setCheckingRegistration] = useState(false);
 
   const wsRef = useRef<WebSocket | null>(null);
@@ -285,13 +283,6 @@ export default function Validator(): JSX.Element {
   const [validatorsCount, setValidatorsCount] = useState<number | null>(null);
   const validatorsPollRef = useRef<number | null>(null);
   const validatorsBackoffRef = useRef<number>(1);
-
-  function saveBearerToken(v: string | null) {
-    try {
-      if (v) { localStorage.setItem("validator_bearer_token", v); setTokenInput(v); toast.success("Token saved successfully"); }
-      else { localStorage.removeItem("validator_bearer_token"); setTokenInput(""); toast.success("Token cleared successfully"); }
-    } catch { toast.error("Could not save token"); }
-  }
 
   function fallbackLocalToken(): string | null {
     try {
@@ -468,7 +459,6 @@ export default function Validator(): JSX.Element {
   useEffect(() => {
     let mounted = true;
     if (!publicKey) {
-      setIsValidatorRegistered(null);
       setShowNotRegisteredModal(false);
       setCheckingRegistration(false);
       return;
@@ -479,7 +469,6 @@ export default function Validator(): JSX.Element {
         setCheckingRegistration(true);
         const registered = await checkIsRegisteredValidator(publicKey);
         if (!mounted) return;
-        setIsValidatorRegistered(registered);
         if (!registered) {
           setShowNotRegisteredModal(true);
         } else {
@@ -488,7 +477,6 @@ export default function Validator(): JSX.Element {
       } catch (err) {
         console.debug("[Validator] registration check error:", err);
         if (mounted) {
-          setIsValidatorRegistered(false);
           setShowNotRegisteredModal(true);
         }
       } finally {
@@ -498,7 +486,6 @@ export default function Validator(): JSX.Element {
 
     return () => { mounted = false; };
   }, [publicKey]);
-
   useEffect(() => {
     if (!publicKey) return;
     let mounted = true;
@@ -746,7 +733,6 @@ export default function Validator(): JSX.Element {
     wsRef.current = ws;
 
     let pingStartedLocal = false;
-    let subscribedConfirmed = false;
 
     ws.onopen = async () => {
       connectingRef.current = false; /* ADDED */
@@ -768,11 +754,9 @@ export default function Validator(): JSX.Element {
         if (payload.type === "subscribed") {
           const body = payload.data ?? {};
           if (body.ok) {
-            subscribedConfirmed = true;
             subscriptionRejectedRef.current = false;
             userRequestedDisconnectRef.current = false;
             setMonitoring(true);
-            try { localStorage.setItem("validatorMonitoring", "true"); } catch {}
             if (!pingStartedLocal) {
               pingTimerRef.current = window.setInterval(() => {
                 try { if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "ping", data: { ts: Date.now() } })); } catch {}
@@ -857,13 +841,13 @@ export default function Validator(): JSX.Element {
         }
 
         console.debug("[Validator] unhandled ws payload type:", payload.type);
+        console.debug("[Validator] unhandled ws payload type:", payload.type);
       } catch (err) { console.error("[Validator] onmessage handler error:", err); }
     };
 
     ws.onclose = () => {
       connectingRef.current = false; /* ADDED */
       wsRef.current = null;
-      if (pingTimerRef.current) { window.clearInterval(pingTimerRef.current); pingTimerRef.current = null; }
       setMonitoring(false);
       try { localStorage.setItem("validatorMonitoring", "false"); } catch {}
 
@@ -908,7 +892,7 @@ export default function Validator(): JSX.Element {
       /* ADDED: persist monitoring=false so auto-restore won't attempt to reconnect */
       try { localStorage.setItem("validatorMonitoring", "false"); } catch {}
 
-      if (reasonMsg) toast.info(reasonMsg);
+      if (reasonMsg) toast(reasonMsg);
       else toast.success("Monitoring stopped successfully");
 
       // mark backend offline (best-effort)
@@ -917,10 +901,8 @@ export default function Validator(): JSX.Element {
 
       const makeSafeTokenGetter = () => {
         if (!getToken) return null;
-        return async (): Promise<string> => {
-          const t = await getToken();
-          if (!t) throw new Error("no token available");
-          return t;
+        return async (): Promise<string | null> => {
+          return await getToken();
         };
       };
       const safeTokenGetter = makeSafeTokenGetter();
@@ -953,16 +935,17 @@ export default function Validator(): JSX.Element {
     }
   }
 
-  async function safeGetToken(getToken?: () => Promise<string>) {
+  async function safeGetToken(getToken?: () => Promise<string | null>): Promise<string | null> {
+    if (!getToken) return null;
     try {
-      if (!getToken) return null;
       return await getToken();
-    } catch {
+    } catch (err) {
+      console.warn("safeGetToken failed:", err);
       return null;
     }
   }
 
-    async function startMonitoring() {
+  const startMonitoring = async () => {
     const pk = publicKey || localStorage.getItem("validatorPublicKey") || "";
 
     // If no public key is present, require the user to connect first.
@@ -971,16 +954,14 @@ export default function Validator(): JSX.Element {
       return;
     }
 
-    // Create a typed wrapper so safeGetToken receives () => Promise<string>
+    // Create a typed wrapper so safeGetToken receives () => Promise<string | null>
     const makeSafeTokenGetter = () => {
       if (!getToken) return null;
-      return async (): Promise<string> => {
+      return async (): Promise<string | null> => {
         const t = await getToken(); // getToken has type GetToken -> Promise<string | null>
-        if (!t) throw new Error("no token available");
         return t;
       };
     };
-
     const safeTokenGetter = makeSafeTokenGetter();
 
     // helper to mark validator online in DB
@@ -1021,7 +1002,7 @@ export default function Validator(): JSX.Element {
 
     await markOnline(pk);
     openWsAndRegister(pk);
-  }
+  };
 
   // auto-restore monitoring after refresh if user had monitoring set
   useEffect(() => {
@@ -1069,7 +1050,7 @@ export default function Validator(): JSX.Element {
     return () => window.removeEventListener("beforeunload", onBeforeUnload);
   }, []);
 
-  function checkLocalPublicKeyAndReact(trigger?: string) {
+  function checkLocalPublicKeyAndReact() {
     try {
       const stored = localStorage.getItem("validatorPublicKey") ?? "";
       if (!stored && monitoring) {
@@ -1096,17 +1077,17 @@ export default function Validator(): JSX.Element {
   useEffect(() => {
     function onStorage(e: StorageEvent) {
       if (e.key === "validatorPublicKey") {
-        checkLocalPublicKeyAndReact("storage");
+        checkLocalPublicKeyAndReact();
       }
     }
-    function onFocus() { checkLocalPublicKeyAndReact("focus"); }
-    function onVisibility() { if (!document.hidden) checkLocalPublicKeyAndReact("visibility"); }
+    function onFocus() { checkLocalPublicKeyAndReact(); }
+    function onVisibility() { if (!document.hidden) checkLocalPublicKeyAndReact(); }
 
     window.addEventListener("storage", onStorage);
     window.addEventListener("focus", onFocus);
     document.addEventListener("visibilitychange", onVisibility);
 
-    checkLocalPublicKeyAndReact("mount");
+    checkLocalPublicKeyAndReact();
 
     return () => {
       window.removeEventListener("storage", onStorage);
@@ -1559,7 +1540,7 @@ export default function Validator(): JSX.Element {
         )}
 
         {/* Clean registration modal */}
-        {showNotRegisteredModal && publicKey && (
+        {showNotRegisteredModal && !checkingRegistration && publicKey && (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
             <div className={`rounded-lg max-w-lg w-full p-8 ${isDarkMode 
               ? 'bg-slate-900 text-white border border-slate-700' 

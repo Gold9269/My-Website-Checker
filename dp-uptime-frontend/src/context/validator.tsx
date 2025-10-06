@@ -1,5 +1,5 @@
 // src/context/validator.tsx
-import React, { createContext, useContext, useEffect, useMemo, useState } from "react";
+import React, { createContext, useContext, useMemo, useState } from "react";
 import { useAuth } from "@clerk/clerk-react";
 import { useUI } from "./ui";
 import { apiFetch } from "./api";

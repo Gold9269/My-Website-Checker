@@ -1,5 +1,3 @@
-import React from "react";
-
 type OwlwatchLoaderProps = {
   message?: string;
   progress?: number; // 0 - 100 (optional)
@@ -7,9 +5,8 @@ type OwlwatchLoaderProps = {
 
 export default function OwlwatchLoader({
   message = "Scanning nodes & checking heartbeats...",
-  progress,
 }: OwlwatchLoaderProps) {
-  const pct = typeof progress === "number" ? Math.max(0, Math.min(100, progress)) : undefined;
+  //const pct = typeof progress === "number" ? Math.max(0, Math.min(100, progress)) : undefined;
 
   return (
     <div className="ow-wrapper" role="status" aria-live="polite" aria-label="Loading Owlwatch">

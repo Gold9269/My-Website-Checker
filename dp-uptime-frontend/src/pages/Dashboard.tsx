@@ -5,16 +5,10 @@ import {
   Sun,
   Moon,
   Globe2,
-  CloudLightning,
   Server,
   Sparkles,
-  Play,
-  Pause,
   BookOpen,
   FileText,
-  Music,
-  Volume2,
-  VolumeX,
   TrendingUp,
   Shield,
   Zap,
@@ -45,7 +39,7 @@ import { WaveAnimation } from "../components/WaveAnimation";
 
 import { useWebsites } from "../hooks/useWebsites";
 import { useValidator } from "../context/validator";
-import { useUI } from "../context/ui";
+// import { useUI } from "../context/ui";
 import axios from "axios";
 //import MusicComponent from "../components/MusicComponent";
 
@@ -79,8 +73,7 @@ function parseCountFromJson(j: any): number | null {
 function Navbar({
   isDark,
   toggleTheme,
-  nodesOnline = 0,
-  onGetStarted,
+  nodesOnline = 0
 }: {
   isDark: boolean;
   toggleTheme: () => void;
@@ -88,7 +81,7 @@ function Navbar({
   onGetStarted?: () => void;
 }) {
   const [visible, setVisible] = useState(true);
-  const [phantomConnecting, setPhantomConnecting] = useState(false);
+  //const [phantomConnecting, setPhantomConnecting] = useState(false);
   const ticking = useRef(false);
   const prevY = useRef(0);
 
@@ -101,47 +94,27 @@ function Navbar({
     }
   })();
 
-  const uiCtx = (() => {
-    try {
-      return useUI();
-    } catch {
-      return undefined as any;
-    }
-  })();
 
-  const notify = uiCtx?.notify ?? {
-    success: (m: string) => toast.success(m),
-    error: (m: string) => toast.error(m),
-    info: (m: string) => toast(m),
-  };
+  // const notify = uiCtx?.notify ?? {
+  //   success: (m: string) => toast.success(m),
+  //   error: (m: string) => toast.error(m),
+  //   info: (m: string) => toast(m),
+  // };
 
   const checkValidatorByPublicKey = validatorCtx?.checkValidatorByPublicKey;
   const setValidatorInContext: ((v: any) => void) | undefined =
     (validatorCtx as any)?.setValidator ?? (validatorCtx as any)?.setLocalValidator;
 
-  const validator = validatorCtx?.validator ?? null;
-
-  const [isValidatorLocal, setIsValidatorLocal] = useState<boolean>(() => {
-    try {
-      return !!localStorage.getItem("validatorPublicKey");
-    } catch {
-      return false;
-    }
-  });
+  //const validator = validatorCtx?.validator ?? null;
 
   // ----------------- NEW: real-time localStorage sync -----------------
-  // Keeps isValidatorLocal and validator context up-to-date when other tabs/pages
+  // Keeps validator context up-to-date when other tabs/pages
   // add/remove "validatorPublicKey". Also hydrates context when a key is added.
   useEffect(() => {
-    let mounted = true;
-
     async function syncFromStorage() {
       try {
         const stored = localStorage.getItem("validatorPublicKey");
         const has = !!stored;
-
-        // update local flag
-        if (mounted) setIsValidatorLocal(has);
 
         if (!has) {
           // key removed -> clear validator context immediately
@@ -190,15 +163,14 @@ function Navbar({
 
     window.addEventListener("storage", onStorage);
     window.addEventListener("focus", onFocus);
+    window.addEventListener("storage", onStorage);
+    window.addEventListener("focus", onFocus);
 
     return () => {
-      mounted = false;
       window.removeEventListener("storage", onStorage);
       window.removeEventListener("focus", onFocus);
     };
   }, [checkValidatorByPublicKey, setValidatorInContext]);
-  // ----------------- end real-time localStorage sync -----------------
-
   // show/hide on scroll
   useEffect(() => {
     prevY.current = typeof window !== "undefined" ? window.scrollY : 0;
@@ -328,26 +300,26 @@ function Navbar({
   //   }
   // }
 
-  const handleDisconnect = async () => {
-    try {
-      try {
-        localStorage.removeItem("validatorPublicKey");
-      } catch {}
-      try {
-        if (window.solana && typeof window.solana.disconnect === "function") await window.solana.disconnect();
-      } catch {}
-      if (typeof setValidatorInContext === "function") {
-        try {
-          setValidatorInContext(null);
-        } catch {}
-      }
-      setIsValidatorLocal(false);
-      toast.success("Disconnected (local state cleared).");
-    } catch (err) {
-      console.error("Disconnect error", err);
-      toast.error("Failed to disconnect.");
-    }
-  };
+  // const handleDisconnect = async () => {
+  //   try {
+  //     try {
+  //       localStorage.removeItem("validatorPublicKey");
+  //     } catch {}
+  //     try {
+  //       if (window.solana && typeof window.solana.disconnect === "function") await window.solana.disconnect();
+  //     } catch {}
+  //     if (typeof setValidatorInContext === "function") {
+  //       try {
+  //         setValidatorInContext(null);
+  //       } catch {}
+  //     }
+  //     setIsValidatorLocal(false);
+  //     toast.success("Disconnected (local state cleared).");
+  //   } catch (err) {
+  //     console.error("Disconnect error", err);
+  //     toast.error("Failed to disconnect.");
+  //   }
+  // };
 
   return (
     <nav
@@ -425,7 +397,7 @@ function Navbar({
 
 
 /* ---------------- Dashboard main ---------------- */
-export default function Dashboard(): JSX.Element {
+export default function Dashboard(): React.ReactElement {
   const { isDark, toggleTheme } = useTheme();
 
   const [stats, setStats] = useState<StatsData>({
@@ -437,23 +409,23 @@ export default function Dashboard(): JSX.Element {
     nodesOnline: 0,
   });
 
-  const { websites, loading: loadingWebsites, error: websitesError } = useWebsites();
-  const validatorCtx = (() => {
-    try {
-      return useValidator();
-    } catch {
-      return undefined as any;
-    }
-  })();
-  const { validator, pendingPayoutsSol } = validatorCtx ?? { validator: null, pendingPayoutsSol: null };
-  const uiCtx = (() => {
-    try {
-      return useUI();
-    } catch {
-      return undefined as any;
-    }
-  })();
-  const { loading: globalLoading } = uiCtx ?? { loading: false };
+  const { websites, } = useWebsites();
+  // const validatorCtx = (() => {
+  //   try {
+  //     return useValidator();
+  //   } catch {
+  //     return undefined as any;
+  //   }
+  // })();
+  // const { validator, pendingPayoutsSol } = validatorCtx ?? { validator: null, pendingPayoutsSol: null };
+  // const uiCtx = (() => {
+  //   try {
+  //     return useUI();
+  //   } catch {
+  //     return undefined as any;
+  //   }
+  // })();
+  //const { loading: globalLoading } = uiCtx ?? { loading: false };
 
   const nodesOnlineFallback = websites?.length ?? stats.nodesOnline;
 
@@ -467,8 +439,6 @@ export default function Dashboard(): JSX.Element {
 
   // safely type getToken (may be undefined)
   const getToken = (auth?.getToken as (() => Promise<string | null>) | undefined) ?? undefined;
-
-  const [currentTime, setCurrentTime] = useState(new Date());
 
   // animated counts + polling
   // --- new/updated state hooks ---
@@ -521,12 +491,9 @@ export default function Dashboard(): JSX.Element {
   // small periodic stat drift + time update
   useEffect(() => {
     const id = setInterval(() => {
-      setCurrentTime(new Date());
       setStats((prev) => ({
         ...prev,
         totalSites: prev.totalSites + Math.floor(Math.random() * 3),
-        activeUsers: Math.max(0, prev.activeUsers + Math.floor(Math.random() * 5) - 2),
-        averageResponseTime: Math.floor(Math.random() * 50) + 120,
       }));
     }, 5000);
     return () => clearInterval(id);
@@ -964,7 +931,7 @@ export default function Dashboard(): JSX.Element {
                   </span>
                 </div>
                 <div className="flex items-center gap-2">
-                  <div className="w-3 h-3 bg-purple-400 rounded-full animate-pulse" />
+                  <div className={`w-3 h-3 bg-purple-400 rounded-full ${fetchingActiveValidators ? "animate-ping" : "animate-pulse"}`} />
                   <span className={isDark ? "text-gray-300" : "text-gray-600"}>
                     <AnimatedCounter target={displayActiveValidators ?? backendActiveValidatorsCount ?? nodesOnlineFallback} /> validators active
                   </span>
@@ -1001,7 +968,7 @@ export default function Dashboard(): JSX.Element {
                         </div>
                       </div>
 
-                      <TrendingUp className={`w-8 h-8 ${isDark ? "text-emerald-400" : "text-emerald-600"}`} />
+                      <TrendingUp className={`w-8 h-8 ${isDark ? "text-emerald-400" : "text-emerald-600"} ${fetchingWebsites ? "animate-pulse" : ""}`} />
                     </div>
 
                     <div className="flex items-center justify-between p-4 rounded-xl bg-gradient-to-r from-purple-500/10 to-pink-500/10">
@@ -1011,7 +978,7 @@ export default function Dashboard(): JSX.Element {
                           <AnimatedCounter target={displayValidators ?? backendValidatorsCount ?? nodesOnlineFallback} />
                         </div>
                       </div>
-                      <Server className={`w-8 h-8 ${isDark ? "text-cyan-400" : "text-cyan-600"}`} />
+                      <Server className={`w-8 h-8 ${isDark ? "text-cyan-400" : "text-cyan-600"} ${fetchingValidators ? "animate-pulse" : ""}`} />
                     </div>
 
                     <div className="flex items-center justify-between p-4 rounded-xl bg-gradient-to-r from-yellow-500/10 to-orange-500/10">

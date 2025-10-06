@@ -25,8 +25,9 @@ function makeTabId() {
     const key = "phantom_tab_id";
     let id = sessionStorage.getItem(key);
     if (!id) {
-      id = (typeof crypto !== "undefined" && (crypto as any).randomUUID) ? (crypto as any).randomUUID() : `tab-${Date.now()}-${Math.floor(Math.random()*10000)}`;
-      sessionStorage.setItem(key, id);
+      const newId = (typeof crypto !== "undefined" && (crypto as any).randomUUID) ? (crypto as any).randomUUID() : `tab-${Date.now()}-${Math.floor(Math.random()*10000)}`;
+      sessionStorage.setItem(key, newId);
+      id = newId;
     }
     return id;
   } catch {
@@ -40,7 +41,7 @@ function sessionKeyFor(tabId: string) {
 
 export const PhantomWalletProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   const tabIdRef = useRef<string>(makeTabId());
-  const tabKey = sessionKeyFor(tabIdRef.current);
+  const tabKey = sessionKeyFor(tabIdRef.current!);
 
   const [address, setAddress] = useState<string | null>(() => {
     try {

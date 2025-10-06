@@ -265,19 +265,19 @@ const WithdrawController: RequestHandler = (req, res, next) => {
           return;
         } catch (err: any) {
           console.error("[WithdrawController] topUp/create transfer failed:", err);
-          if ((err as SendTransactionError).transactionLogs) {
-            res.status(500).json({
-              ok: false,
-              error: "topUp transaction failed",
-              details: {
-                message: err.message,
-                transactionLogs: (err as SendTransactionError).transactionLogs,
-                signature: (err as any).signature ?? null,
-              },
-            });
-          } else {
-            res.status(500).json({ ok: false, error: "topUp transaction failed", details: String(err) });
-          }
+          if ((err as SendTransactionError).logs?.length) {
+          res.status(500).json({
+          ok: false,
+          error: "transaction failed",
+          details: {
+            message: err.message,
+            transactionLogs: (err as SendTransactionError).logs,
+            signature: (err as any).signature ?? null,
+          },
+        });
+      } else {
+          res.status(500).json({ ok: false, error: "transaction failed", details: String(err) });
+      }
           return;
         }
       }
@@ -333,22 +333,22 @@ const WithdrawController: RequestHandler = (req, res, next) => {
         return;
       } catch (err: any) {
         console.error("WithdrawController: payout failed:", err);
-        if ((err as SendTransactionError).transactionLogs) {
+        if ((err as SendTransactionError).logs?.length) {
           res.status(500).json({
-            ok: false,
-            error: "transaction failed",
-            details: {
-              message: err.message,
-              transactionLogs: (err as SendTransactionError).transactionLogs,
-              signature: (err as any).signature ?? null,
-            },
-          });
-        } else {
+          ok: false,
+          error: "transaction failed",
+          details: {
+            message: err.message,
+            transactionLogs: (err as SendTransactionError).logs,
+            signature: (err as any).signature ?? null,
+          },
+        });
+      } else {
           res.status(500).json({ ok: false, error: "transaction failed", details: String(err) });
-        }
-        return;
       }
-    } catch (err) {
+return;
+}
+} catch (err) {
       console.error("WithdrawController error:", err);
       throw err;
     }

@@ -1,5 +1,3 @@
-// src/App.tsx
-import React from 'react';
 import { Route, Routes } from 'react-router-dom';
 import Dashboard from './pages/Dashboard';
 import Tracker from './pages/Tracker';

@@ -234,7 +234,7 @@ async function persistTickAndPayoutFallback(websiteId: any, websiteOwnerId: any,
   function castId(id: any) {
     try {
       if (!id) return id;
-      return mongoose.Types.ObjectId.isValid(String(id)) ? mongoose.Types.ObjectId(String(id)) : id;
+      return mongoose.Types.ObjectId.isValid(String(id)) ? new mongoose.Types.ObjectId(String(id)) : id;
     } catch {
       return id;
     }

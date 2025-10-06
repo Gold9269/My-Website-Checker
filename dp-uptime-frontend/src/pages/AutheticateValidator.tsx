@@ -13,7 +13,7 @@ import {
   SignedOut,
   UserButton,
 } from "@clerk/clerk-react";
-import { useUI } from "../context/ui";
+// import { useUI } from "../context/ui";
 import { usePhantom } from "../context/PhantomWalletContext"
 
 declare global {
@@ -24,11 +24,10 @@ declare global {
 
 const backendUrl = import.meta.env.VITE_API_BASE ?? "http://localhost:5000";
 
-export default function Validator(): JSX.Element {
+export default function Validator(): React.ReactElement {
   const { getToken } = useAuth();
 
   const {
-    validator: ctxValidator,
     checkValidatorByPublicKey,
     registerValidator,
     setValidator: setValidatorInContext,
@@ -327,42 +326,41 @@ export default function Validator(): JSX.Element {
     isDark,
     toggleTheme,
     nodesOnline = 0,
-    onGetStarted,
   }: {
     isDark: boolean;
     toggleTheme: () => void;
     nodesOnline?: number;
     onGetStarted?: () => void;
-  }): JSX.Element {
+  }): React.ReactElement {
     const [visible, setVisible] = useState(true);
     const prevY = useRef<number>(0);
     const ticking = useRef(false);
-    const [phantomConnecting, setPhantomConnecting] = useState(false);
+    //const [phantomConnecting, setPhantomConnecting] = useState(false);
 
-    const uiCtx = (() => {
-      try {
-        return useUI();
-      } catch {
-        return undefined as any;
-      }
-    })();
+    // const uiCtx = (() => {
+    //   try {
+    //     return useUI();
+    //   } catch {
+    //     return undefined as any;
+    //   }
+    // })();
 
-    const notify =
-      uiCtx?.notify ??
-      {
-        success: (m: string) => toast.success(m),
-        error: (m: string) => toast.error(m),
-        info: (m: string) => toast(m),
-      };
+    // const notify =
+    //   uiCtx?.notify ??
+    //   {
+    //     success: (m: string) => toast.success(m),
+    //     error: (m: string) => toast.error(m),
+    //     info: (m: string) => toast(m),
+    //   };
 
-    const [isValidatorLocal, setIsValidatorLocal] = useState<boolean>(() => {
+    //const [isValidatorLocal, setIsValidatorLocal] = useState<boolean>(() => {
       // determine initial state from validator context (not localStorage)
-      try {
-        return !!ctxValidator;
-      } catch {
-        return false;
-      }
-    });
+    //   try {
+    //     return !!ctxValidator;
+    //   } catch {
+    //     return false;
+    //   }
+    // });
 
     useEffect(() => {
       prevY.current = typeof window !== "undefined" ? window.scrollY : 0;
@@ -390,89 +388,89 @@ export default function Validator(): JSX.Element {
       return () => window.removeEventListener("scroll", handleScroll);
     }, []);
 
-    async function handleConnectPhantomAndCheck() {
-      if (phantomConnecting) return;
-      setPhantomConnecting(true);
+    // async function handleConnectPhantomAndCheck() {
+    //   if (phantomConnecting) return;
+    //   setPhantomConnecting(true);
 
-      try {
-        // prefer phantom context
-        if (!phantomCtx?.isInstalled) {
-          notify.error("Phantom wallet not found. Install Phantom or use the onboarding page.");
-          setPhantomConnecting(false);
-          return;
-        }
+    //   try {
+    //     // prefer phantom context
+    //     if (!phantomCtx?.isInstalled) {
+    //       notify.error("Phantom wallet not found. Install Phantom or use the onboarding page.");
+    //       setPhantomConnecting(false);
+    //       return;
+    //     }
 
-        if (typeof phantomCtx.connect === "function") {
-          await phantomCtx.connect();
-        } else if (window.solana?.connect) {
-          await window.solana.connect();
-        }
+    //     if (typeof phantomCtx.connect === "function") {
+    //       await phantomCtx.connect();
+    //     } else if (window.solana?.connect) {
+    //       await window.solana.connect();
+    //     }
 
-        const pk = phantomCtx?.address ?? (window.solana?.publicKey?.toString?.() ?? "");
-        if (!pk) {
-          notify.error("Failed to retrieve public key from Phantom.");
-          setPhantomConnecting(false);
-          return;
-        }
+    //     const pk = phantomCtx?.address ?? (window.solana?.publicKey?.toString?.() ?? "");
+    //     if (!pk) {
+    //       notify.error("Failed to retrieve public key from Phantom.");
+    //       setPhantomConnecting(false);
+    //       return;
+    //     }
 
-        // do not write to localStorage — use validator context when possible
-        let record = null;
-        if (typeof checkValidatorByPublicKey === "function") {
-          try {
-            record = await checkValidatorByPublicKey(pk);
-          } catch (err) {
-            console.warn("checkValidatorByPublicKey failed:", err);
-            record = null;
-          }
-        }
+    //     // do not write to localStorage — use validator context when possible
+    //     let record = null;
+    //     if (typeof checkValidatorByPublicKey === "function") {
+    //       try {
+    //         record = await checkValidatorByPublicKey(pk);
+    //       } catch (err) {
+    //         console.warn("checkValidatorByPublicKey failed:", err);
+    //         record = null;
+    //       }
+    //     }
 
-        if (record) {
-          notify.success("Validator record found — redirecting to dashboard");
-          if (typeof setValidatorInContext === "function") {
-            try {
-              setValidatorInContext(record);
-            } catch (err) {
-              /* ignore */
-            }
-          }
-          setIsValidatorLocal(true);
-          window.location.assign("/validator");
-        } else {
-          setIsValidatorLocal(false);
-          notify.success("No validator record — redirecting to onboarding");
-          window.location.assign("/become-validator");
-        }
-      } catch (err) {
-        console.error("Phantom connect/check error:", err);
-        notify.error("Error connecting or checking validator. Check console & backend/CORS.");
-      } finally {
-        setPhantomConnecting(false);
-      }
-    }
+    //     if (record) {
+    //       notify.success("Validator record found — redirecting to dashboard");
+    //       if (typeof setValidatorInContext === "function") {
+    //         try {
+    //           setValidatorInContext(record);
+    //         } catch (err) {
+    //           /* ignore */
+    //         }
+    //       }
+    //       setIsValidatorLocal(true);
+    //       window.location.assign("/validator");
+    //     } else {
+    //       setIsValidatorLocal(false);
+    //       notify.success("No validator record — redirecting to onboarding");
+    //       window.location.assign("/become-validator");
+    //     }
+    //   } catch (err) {
+    //     console.error("Phantom connect/check error:", err);
+    //     notify.error("Error connecting or checking validator. Check console & backend/CORS.");
+    //   } finally {
+    //     setPhantomConnecting(false);
+    //   }
+    // }
 
-    const handleDisconnect = async () => {
-      try {
-        try {
-          if (phantomCtx && typeof phantomCtx.disconnect === "function") {
-            await phantomCtx.disconnect();
-          } else if (window.solana && typeof window.solana.disconnect === "function") {
-            await window.solana.disconnect();
-          }
-        } catch (err) {
-          console.warn("Phantom disconnect failed:", err);
-        }
-        if (typeof setValidatorInContext === "function") {
-          try {
-            setValidatorInContext(null);
-          } catch {}
-        }
-        setIsValidatorLocal(false);
-        notify.success("Disconnected wallet and cleared validator state locally");
-      } catch (err) {
-        console.error("Disconnect error:", err);
-        notify.error("Failed to disconnect wallet");
-      }
-    };
+    // const handleDisconnect = async () => {
+    //   try {
+    //     try {
+    //       if (phantomCtx && typeof phantomCtx.disconnect === "function") {
+    //         await phantomCtx.disconnect();
+    //       } else if (window.solana && typeof window.solana.disconnect === "function") {
+    //         await window.solana.disconnect();
+    //       }
+    //     } catch (err) {
+    //       console.warn("Phantom disconnect failed:", err);
+    //     }
+    //     if (typeof setValidatorInContext === "function") {
+    //       try {
+    //         setValidatorInContext(null);
+    //       } catch {}
+    //     }
+    //     setIsValidatorLocal(false);
+    //     notify.success("Disconnected wallet and cleared validator state locally");
+    //   } catch (err) {
+    //     console.error("Disconnect error:", err);
+    //     notify.error("Failed to disconnect wallet");
+    //   }
+    // };
 
     // Best-effort validators count (non-blocking)
     const [validatorsCount, setValidatorsCount] = useState<number | null>(null);

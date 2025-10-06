@@ -12,7 +12,7 @@ export interface IWebsite {
   alertCooldownMinutes?: number;
   createdAt?: string;
   updatedAt?: string;
-}n
+}
 
 export interface IWebsiteTick {
   _id: string;

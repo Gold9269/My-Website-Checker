@@ -454,7 +454,6 @@ function Navbar({
   isDark,
   toggleTheme,
   nodesOnline = 0,
-  onGetStarted,
   walletPublicKey,
   connectWallet,
   disconnectWallet,
@@ -466,7 +465,7 @@ function Navbar({
   walletPublicKey?: string | null;
   connectWallet?: () => Promise<void>;
   disconnectWallet?: () => Promise<void>;
-}): JSX.Element {
+}): React.ReactElement {
   const [visible, setVisible] = useState(true);
   const prevY = useRef<number>(0);
   const ticking = useRef(false);
@@ -637,7 +636,7 @@ function Navbar({
 }
 
 // ----------------- Main App page -----------------
-export default function App(): JSX.Element {
+export default function App(): React.ReactElement {
   // THEME PERSISTENCE:
   const savedTheme = (() => { try { return localStorage.getItem("theme"); } catch { return null; } })();
   const [isDarkMode, setIsDarkMode] = useState<boolean>(() => {
@@ -657,7 +656,7 @@ export default function App(): JSX.Element {
   const getToken = auth?.getToken;
 
   // Validator context usage
-  const { validator } = (() => { try { return useValidator(); } catch { return { validator: null } as any; } })();
+  (() => { try { useValidator(); } catch { /* ignore */ } })();
 
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [loadingWebsites, setLoadingWebsites] = useState<boolean>(true);
@@ -667,11 +666,11 @@ export default function App(): JSX.Element {
   const connection = useMemo(() => new Connection(clusterApiUrl(SOLANA_NETWORK), 'confirmed'), []);
 
   const [walletPublicKey, setWalletPublicKey] = useState<string | null>(null);
-  const [walletConnecting, setWalletConnecting] = useState(false);
+  //const [walletConnecting, setWalletConnecting] = useState(false);
 
   const connectWallet = async () => {
     try {
-      setWalletConnecting(true);
+      //setWalletConnecting(true);
       const provider = (window as any).solana;
       if (!provider) {
         toast.error('No Solana wallet available (install Phantom).');
@@ -688,7 +687,7 @@ export default function App(): JSX.Element {
         toast.error('Failed to connect wallet');
       }
     } finally {
-      setWalletConnecting(false);
+      //setWalletConnecting(false);
     }
   };
 
