@@ -13,5 +13,5 @@
     "types": ["node"],
     "lib": ["ES2020", "DOM"]
   },
-  "include": ["./**/*.ts", "tools/scan-routes.mjs"]
+  "include": ["./**/*.ts", "tools/scan-routes.mjs", "index.js"]
 }
