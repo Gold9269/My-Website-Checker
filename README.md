@@ -1,7 +1,7 @@
 # My Website Checker
 
 **Decentralized Website Uptime & Health Monitoring**  
-*Production-minded monitoring platform combining a MERN frontend/backend, a WebSocket Hub for realtime coordination, and integrated validator logic that performs health checks. Validators are fully integrated and manageable from the UI — no separate “Validators” folder or external worker orchestration required.*
+*Production-minded monitoring platform combining a MERN frontend/backend, a WebSocket Hub for realtime coordination, and integrated validator logic that performs health checks. Validators are fully integrated and manageable from the UI *
 
 ---
 
@@ -132,4 +132,5 @@ Contributions are welcome. Suggested areas:
 - UI enhancements for validator fleet management and reporting.
 
 Please provide contribution guidelines, tests, and an architectural overview to help onboard new contributors.
+
 
