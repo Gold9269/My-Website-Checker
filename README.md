@@ -38,7 +38,6 @@
 - **Frontend (MERN)** — React UI for creating and managing monitors, realtime dashboards, and historical inspection.  
 - **Backend API (MERN)** — Node/Express + MongoDB for persistence, authentication, and API surface.  
 - **Hub (WebSocket)** — Realtime broker that coordinates updates and propagates check results between backend and clients.  
-- **Validators (integrated)** — Built-in validator modules execute probes on configured schedules, publish results, and surface status in the UI.
 
 This separation enables independent scaling and fault isolation while keeping the operational model straightforward.
 
@@ -132,6 +131,7 @@ Contributions are welcome. Suggested areas:
 - UI enhancements for validator fleet management and reporting.
 
 Please provide contribution guidelines, tests, and an architectural overview to help onboard new contributors.
+
 
 
 
